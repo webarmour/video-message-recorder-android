@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="unknown">Неизвестно</string>
+    <string name="camera_front">Фронтальная</string>
+    <string name="camera_rear_wide">Задняя широкоугольная</string>
+    <string name="camera_rear_zoom">Задняя %1$.1f×</string>
+    <string name="camera_rear_one_x">Задняя 1×</string>
+    <string name="camera_generic">камера</string>
+    <string name="camera2_level_legacy">LEGACY</string>
+    <string name="camera2_level_limited">LIMITED</string>
+    <string name="camera2_level_full">FULL</string>
+    <string name="camera2_level_3">LEVEL_3</string>
+    <string name="camera2_level_external">EXTERNAL</string>
+    <string name="camera2_level_unknown">UNKNOWN</string>
+    <string name="format_mbps">%1$.1f Мбит/с</string>
+    <string name="status_waiting_for_camera">Ожидание камеры</string>
+    <string name="status_switching_prewarmed">Переключение на %1$s · камера прогрета</string>
+    <string name="status_switching_audio_continues">Переключение на %1$s · аудио продолжается</string>
+    <string name="status_reconfiguring_camera_source">Переконфигурация источника камеры</string>
+    <string name="status_preparing_cameras">Подготовка камер</string>
+    <string name="status_opening_both_for_prewarm">Открытие фронтальной и задней камер для прогрева</string>
+    <string name="status_opening_camera">Открытие %1$s</string>
+    <string name="status_warming_camera">Прогрев %1$s · ожидание стабильного 3A</string>
+    <string name="status_recording_camera_audio_uninterrupted">Запись · %1$s · аудио без прерывания</string>
+    <string name="status_ready_camera">Готово · %1$s</string>
+    <string name="status_starting_recorder">Запуск записи с прогретой камеры %1$s</string>
+    <string name="status_recording_details">Запись · %1$s · %2$d×%3$d · %4$d fps · %5$s · B=%6$d</string>
+    <string name="status_finalizing_mp4">Завершение MP4</string>
+    <string name="status_concurrent_unavailable">Concurrent prewarm недоступен · используется смена камеры без остановки аудио</string>
+    <string name="status_restoring_camera">%1$s · восстановление %2$s</string>
+    <string name="status_ready_details">Готово · %1$s · %2$s · %3$d fps · AE %4$s · %5$s · %6$s</string>
+    <string name="status_adaptive_ae">адаптивный AE</string>
+    <string name="status_fps_hold_active">удержание FPS активно</string>
+    <string name="status_fps_hold_unsupported">удержание FPS недоступно</string>
+    <string name="status_default_range">по умолчанию</string>
+    <string name="status_prewarmed">прогрета</string>
+    <string name="status_warming">прогревается</string>
+    <string name="status_dual_camera_prewarm">прогреты обе камеры</string>
+    <string name="status_single_camera">одна камера</string>
+    <string name="error_unable_prepare_camera">Не удалось подготовить камеру</string>
+    <string name="error_microphone_permission_missing">Нет разрешения на микрофон</string>
+    <string name="error_cannot_guarantee_fps">Камера не может гарантировать %1$d fps с заявленными диапазонами AE. Отключите удержание FPS или выберите другой FPS.</string>
+    <string name="error_start_failed">Ошибка запуска: %1$s</string>
+    <string name="error_stop_failed">Ошибка остановки: %1$s</string>
+    <string name="error_camera_disconnected">Камера отключена</string>
+    <string name="error_camera_code">Ошибка камеры %1$d</string>
+    <string name="error_session_configuration_failed">Не удалось настроить сессию камеры</string>
+    <string name="error_repeating_request_failed">Ошибка repeating request: %1$s</string>
+    <string name="error_activate_camera_failed">Не удалось активировать камеру: %1$s</string>
+    <string name="status_recording_ready">Запись готова</string>
+</resources>
