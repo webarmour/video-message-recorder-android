@@ -2,7 +2,7 @@
 
 [English](#english) · [Русский](#русский)
 
-Android library for recording short in-app video messages.  
+Android library for recording short in-app video messages.
 
 <p align="center">
   <a href="./docs/images/demo-recording.png">
@@ -16,40 +16,40 @@ Android library for recording short in-app video messages.
 
 Built on Camera2, OpenGL/EGL, MediaCodec, AudioRecord and MediaMuxer.
 
-The repository contains:
+Repository structure:
 
-- [`app`](app) — minimal demo UI and integration example.
+- [`app`](app) — minimal demo application and integration example.
 - [`video-message-recorder`](video-message-recorder) — reusable Android library module.
-- [`docs/INTEGRATION.md`](docs/INTEGRATION.md) — detailed integration guide.
+- [`docs/INTEGRATION.md`](docs/INTEGRATION.md) — consumer integration guide.
+- [`docs/architecture/LIBRARY_ARCHITECTURE.md`](docs/architecture/LIBRARY_ARCHITECTURE.md) — library boundaries and ownership.
+- [`docs/architecture/THREADING_REVIEW.md`](docs/architecture/THREADING_REVIEW.md) — current threading model and known issues.
 
 ---
 
 # English
 
-## Features / use cases
+## Use cases
 
-Use the library when you need video messages inside a chat, messenger, social app or another in-app flow.
+The library is intended for video messages inside chats, messengers, social applications and other in-app recording flows.
 
-Supported scenarios:
+It supports:
 
 - square video recording with front or rear camera;
-- switching front/rear camera during an active recording;
-- zoom during recording;
+- front/rear camera switching during an active recording;
+- zoom while recording;
 - automatic device-aware recording configuration;
-- fully custom recording configuration when required;
-- circular preview in the host UI;
+- explicit custom recording configuration;
+- host-controlled circular preview;
 - optional circular mask baked into the saved MP4;
-- optional CSV diagnostics/telemetry.
+- optional CSV telemetry for diagnostics.
 
-The library owns the camera/encoding pipeline. The host application owns UI, runtime permissions, file storage, upload and message sending.
+The library owns the camera and encoding pipeline. The host owns UI, runtime permissions, file persistence, upload and message sending.
 
 **Requirements:** Android API 28+, `CAMERA` and `RECORD_AUDIO` runtime permissions.
 
 ## Installation
 
-### 1. Local Gradle module
-
-For development or when the module is included directly in your project:
+### Local Gradle module
 
 ```kotlin
 // settings.gradle.kts
@@ -63,27 +63,21 @@ dependencies {
 }
 ```
 
-### 2. AAR
+### AAR
 
-Build the release AAR:
+Build:
 
 ```bash
 ./gradlew :video-message-recorder:assembleRelease
 ```
 
-The artifact is created in:
+Artifact:
 
 ```text
-video-message-recorder/build/outputs/aar/
+video-message-recorder/build/outputs/aar/video-message-recorder-release.aar
 ```
 
-Copy it to the consumer project, for example:
-
-```text
-app/libs/video-message-recorder-release.aar
-```
-
-and add:
+Consumer:
 
 ```kotlin
 dependencies {
@@ -91,15 +85,15 @@ dependencies {
 }
 ```
 
-### 3. Maven Local
+### Maven Local
 
-Useful for testing the packaged library from a separate Android project:
+Publish from this repository:
 
 ```bash
 ./gradlew :video-message-recorder:publishToMavenLocal
 ```
 
-Add `mavenLocal()` to the consumer project:
+Consumer repository configuration:
 
 ```kotlin
 dependencyResolutionManagement {
@@ -111,7 +105,7 @@ dependencyResolutionManagement {
 }
 ```
 
-Then:
+Consumer dependency:
 
 ```kotlin
 dependencies {
@@ -121,11 +115,9 @@ dependencies {
 }
 ```
 
-> The library is not published to a public Maven repository yet. The coordinate above currently works with `mavenLocal()` after local publication.
+> The artifact is not published to a public Maven repository yet. This coordinate currently works through `mavenLocal()` after local publication.
 
 ## Quick start
-
-Create the recorder. `RecordingMode.Auto` is the recommended default:
 
 ```kotlin
 val recorder = VideoMessageRecorder(
@@ -133,18 +125,17 @@ val recorder = VideoMessageRecorder(
     mode = RecordingMode.Auto,
     onState = { state ->
         if (state.cameraReady) {
-            // Recorder is ready.
+            // Ready to record.
         }
     },
     onRecordingFinished = { result ->
         val videoFile = result.file
-
-        // Upload, move, copy or delete the MP4.
+        // Hand the file to your own persistence/upload pipeline.
     },
 )
 ```
 
-Pass the permission result:
+Permissions:
 
 ```kotlin
 recorder.setPermissionGranted(
@@ -152,7 +143,7 @@ recorder.setPermissionGranted(
 )
 ```
 
-Forward lifecycle events:
+Lifecycle:
 
 ```kotlin
 recorder.onStart()
@@ -160,7 +151,7 @@ recorder.onStop()
 recorder.close()
 ```
 
-Attach your preview `Surface`:
+Preview:
 
 ```kotlin
 recorder.attachPreview(
@@ -171,73 +162,54 @@ recorder.attachPreview(
 )
 ```
 
-Recording controls:
+Controls:
 
 ```kotlin
 recorder.startRecording()
 recorder.stopRecording()
-
 recorder.switchCamera()
 recorder.updateZoomRatio(1.5f)
 ```
 
-The result is returned through `onRecordingFinished`:
+Result:
 
 ```kotlin
 result.file          // finalized MP4
 result.baseName      // generated recording name
-result.config        // actual RecordingConfig
-result.telemetryCsv  // null unless telemetry is enabled
+result.config        // actual RecordingConfig used
+result.telemetryCsv  // null when diagnostics are disabled
 ```
 
-### Custom configuration
+Use `RecordingMode.Auto` for normal production usage. Use `RecordingMode.Custom` only when the application requires explicit parameters.
 
-Use AUTO unless the application explicitly needs fixed parameters:
-
-```kotlin
-val recorder = VideoMessageRecorder(
-    context = context,
-    mode = RecordingMode.Custom(
-        RecordingConfig(
-            quality = VideoQuality.TELEGRAM_NOTE_MAX,
-            frameRate = 30,
-            videoBitrate = 1_500_000,
-            circleMaskInSavedVideo = false,
-        )
-    ),
-)
-```
-
-See [`docs/INTEGRATION.md`](docs/INTEGRATION.md) for the complete API and configuration options.
+See [Integration Guide](docs/INTEGRATION.md).
 
 ---
 
 # Русский
 
-## Возможности / сценарии использования
+## Сценарии использования
 
-Библиотека предназначена для видеосообщений внутри чатов, мессенджеров, социальных приложений и других встроенных сценариев записи видео.
+Библиотека предназначена для видеосообщений внутри чатов, мессенджеров, социальных приложений и других встроенных сценариев записи.
 
 Поддерживаются:
 
 - запись квадратного видео с фронтальной или основной камеры;
 - переключение front/rear камеры во время активной записи;
 - zoom во время записи;
-- автоматический подбор параметров под возможности устройства;
+- автоматический подбор параметров под устройство;
 - ручная настройка параметров записи;
 - круглый preview на стороне приложения;
 - опциональная круглая маска непосредственно в сохранённом MP4;
-- опциональная CSV-диагностика/telemetry.
+- опциональная CSV-telemetry для диагностики.
 
-Библиотека управляет камерой и encoding pipeline. UI, runtime permissions, хранение файла, upload и отправка сообщения остаются на стороне приложения.
+Библиотека управляет камерой и encoding pipeline. UI, runtime permissions, постоянное хранение файла, upload и отправка сообщения остаются на стороне приложения.
 
 **Требования:** Android API 28+, runtime permissions `CAMERA` и `RECORD_AUDIO`.
 
 ## Подключение
 
-### 1. Локальный Gradle module
-
-Для разработки или подключения исходного модуля напрямую:
+### Локальный Gradle module
 
 ```kotlin
 // settings.gradle.kts
@@ -251,27 +223,21 @@ dependencies {
 }
 ```
 
-### 2. AAR
+### AAR
 
-Собрать release AAR:
+Собрать:
 
 ```bash
 ./gradlew :video-message-recorder:assembleRelease
 ```
 
-Файл появится в:
+Файл:
 
 ```text
-video-message-recorder/build/outputs/aar/
+video-message-recorder/build/outputs/aar/video-message-recorder-release.aar
 ```
 
-Скопировать его в consumer-проект, например:
-
-```text
-app/libs/video-message-recorder-release.aar
-```
-
-и подключить:
+Подключение в другом проекте:
 
 ```kotlin
 dependencies {
@@ -279,15 +245,15 @@ dependencies {
 }
 ```
 
-### 3. Maven Local
+### Maven Local
 
-Удобно для проверки упакованной библиотеки из отдельного тестового Android-проекта:
+Опубликовать локально:
 
 ```bash
 ./gradlew :video-message-recorder:publishToMavenLocal
 ```
 
-В consumer-проекте добавить:
+В consumer-проекте:
 
 ```kotlin
 dependencyResolutionManagement {
@@ -299,8 +265,6 @@ dependencyResolutionManagement {
 }
 ```
 
-и dependency:
-
 ```kotlin
 dependencies {
     implementation(
@@ -309,11 +273,9 @@ dependencies {
 }
 ```
 
-> Сейчас библиотека ещё не опубликована в публичном Maven-репозитории. Указанная dependency работает через `mavenLocal()` после локальной публикации.
+> В публичном Maven-репозитории библиотека пока не опубликована. Сейчас эта dependency работает через `mavenLocal()` после локальной публикации.
 
 ## Быстрый старт
-
-Рекомендуемый режим — `RecordingMode.Auto`:
 
 ```kotlin
 val recorder = VideoMessageRecorder(
@@ -321,19 +283,17 @@ val recorder = VideoMessageRecorder(
     mode = RecordingMode.Auto,
     onState = { state ->
         if (state.cameraReady) {
-            // Камера готова к записи.
+            // Можно начинать запись.
         }
     },
     onRecordingFinished = { result ->
         val videoFile = result.file
-
-        // Загрузить, переместить, скопировать
-        // или удалить готовый MP4.
+        // Передать файл в свой storage/upload pipeline.
     },
 )
 ```
 
-Передать результат runtime permissions:
+Permissions:
 
 ```kotlin
 recorder.setPermissionGranted(
@@ -341,7 +301,7 @@ recorder.setPermissionGranted(
 )
 ```
 
-Передавать lifecycle:
+Lifecycle:
 
 ```kotlin
 recorder.onStart()
@@ -349,7 +309,7 @@ recorder.onStop()
 recorder.close()
 ```
 
-Передать `Surface` для preview:
+Preview:
 
 ```kotlin
 recorder.attachPreview(
@@ -360,41 +320,24 @@ recorder.attachPreview(
 )
 ```
 
-Управление записью:
+Управление:
 
 ```kotlin
 recorder.startRecording()
 recorder.stopRecording()
-
 recorder.switchCamera()
 recorder.updateZoomRatio(1.5f)
 ```
 
-Готовый результат приходит в `onRecordingFinished`:
+Результат:
 
 ```kotlin
 result.file          // готовый MP4
 result.baseName      // имя записи
 result.config        // фактически использованный RecordingConfig
-result.telemetryCsv  // null, если telemetry выключена
+result.telemetryCsv  // null при выключенной диагностике
 ```
 
-### Свои параметры записи
+Для обычного production-сценария используйте `RecordingMode.Auto`. `RecordingMode.Custom` нужен только при необходимости явно задавать параметры.
 
-AUTO рекомендуется для обычного использования. `Custom` нужен, когда приложению действительно необходимы конкретные параметры:
-
-```kotlin
-val recorder = VideoMessageRecorder(
-    context = context,
-    mode = RecordingMode.Custom(
-        RecordingConfig(
-            quality = VideoQuality.TELEGRAM_NOTE_MAX,
-            frameRate = 30,
-            videoBitrate = 1_500_000,
-            circleMaskInSavedVideo = false,
-        )
-    ),
-)
-```
-
-Полное описание API и параметров находится в [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
+Полная документация: [Integration Guide](docs/INTEGRATION.md).
