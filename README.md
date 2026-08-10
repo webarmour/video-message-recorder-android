@@ -1,68 +1,389 @@
-# CameraPipelineLab
+# Video Message Recorder for Android
 
-Experimental Camera2 / OpenGL / MediaCodec video-message pipeline.
+[English](#english) · [Русский](#русский)
 
-## This revision
+Android library for recording short in-app video messages.  
+Built on Camera2, OpenGL/EGL, MediaCodec, AudioRecord and MediaMuxer.
 
-- Viewfinder, zoom, status and record/camera-switch controls stay fixed; only Recording settings scroll.
-- Pinch-to-zoom on the viewfinder plus a zoom slider directly below it. Zoom can be changed while recording.
-- Core video-message controls remain in the main settings section.
-- Additional Camera2 controls live under a nested `Advanced` spoiler. UI text is selected from Android string resources for the current device language (English default, Russian in `values-ru`).
-- CaptureRequest-only changes no longer mark the whole UI busy or restart camera warmup.
-- Camera request changes are debounced off the main thread (32 ms), which prevents rapid sliders/pinch gestures from flooding Camera2.
-- Once a concurrently opened front/rear camera has completed its initial 3A warmup, ordinary tuning changes no longer invalidate that warm state.
-- Rear concurrent pipeline is kept at its native logical-camera wide/ultrawide base zoom while inactive, when the HAL exposes zoom < 1x.
-- GL rendering uses a display-priority HandlerThread; audio uses audio-priority worker threads; video drain uses display priority.
-- AVC max-complexity forcing is disabled to keep the hardware encoder in a realtime-friendly configuration.
-- Live pipeline diagnostics show estimated source-frame gaps and encoder EGL backpressure events. These are also saved in the CSV header.
-- All primitive CameraCharacteristics arrays use explicit null-safe handling; no invalid `IntArray?.orEmpty()` / `FloatArray?.orEmpty()` calls remain.
+The repository contains:
 
-## Default Advanced profile
+- [`app`](app) — minimal demo UI and integration example.
+- [`video-message-recorder`](video-message-recorder) — reusable Android library module.
+- [`docs/INTEGRATION.md`](docs/INTEGRATION.md) — detailed integration guide.
 
-Designed as a sensible realtime flagship baseline:
+---
 
-- Exposure: Auto
-- Android low-light boost: Off
-- AE priority: Off
-- Anti-banding: Auto
-- White balance: Auto
-- Focus: Continuous Video
-- Video stabilization: Preview stabilization when supported (fallback to Video)
-- OIS: OEM
-- Hot-pixel correction: Fast
-- Lens shading: Fast
-- Color correction: Fast
-- Edge enhancement: Fast
-- Distortion correction: Fast
-- Chromatic aberration correction: Fast
-- Tonemap: Fast
+# English
 
-Noise reduction remains in the main settings and defaults to `Minimal` for this experiment.
+## Features / use cases
 
-## Performance counters
+Use the library when you need video messages inside a chat, messenger, social app or another in-app flow.
 
-`estimated source drops` compares SurfaceTexture timestamp gaps against the requested frame interval. It is intentionally a diagnostic estimate: if adaptive AE is allowed to lower FPS in the dark, those longer intervals will also appear here.
+Supported scenarios:
 
-`encoder stalls` counts encoder `eglSwapBuffers()` calls that blocked longer than one target frame interval, which is a useful indication of GPU/MediaCodec backpressure at high resolution/bitrate.
+- square video recording with front or rear camera;
+- switching front/rear camera during an active recording;
+- zoom during recording;
+- automatic device-aware recording configuration;
+- fully custom recording configuration when required;
+- circular preview in the host UI;
+- optional circular mask baked into the saved MP4;
+- optional CSV diagnostics/telemetry.
 
-## Architecture notes
+The library owns the camera/encoding pipeline. The host application owns UI, runtime permissions, file storage, upload and message sending.
 
-- [`docs/THREADING_REVIEW.md`](docs/THREADING_REVIEW.md) explains which dedicated threads should remain, which orchestration pieces are good coroutine candidates, and why a single dual-camera GL engine is the larger optimization.
-- [`docs/LIBRARY_ARCHITECTURE.md`](docs/LIBRARY_ARCHITECTURE.md) defines the proposed reusable AAR boundaries, public recorder API, host responsibilities, sending adapter and overlay/blur integration.
-- This revision intentionally does **not** rewrite the realtime GL/AudioRecord hot path to generic coroutine dispatchers. Threading changes should be benchmarked independently from camera/codec tuning.
+**Requirements:** Android API 28+, `CAMERA` and `RECORD_AUDIO` runtime permissions.
 
-## v1.3 concurrent 60 fps fix
+## Installation
 
-- Concurrent prewarm no longer pins both camera sessions to the selected recording FPS.
-- The inactive concurrent camera is capped at a <=30 fps AE range when the device exposes one.
-- When switching cameras, the target is promoted to the selected recording FPS immediately before the GL source is swapped; the previous camera is then demoted back to the prewarm rate.
-- Recording performance counters now count only frames while that renderer is attached to the encoder. Inactive prewarm frames no longer inflate source-drop telemetry.
-- Renderer performance counters are reset once per recording rather than on every camera switch.
+### 1. Local Gradle module
 
+For development or when the module is included directly in your project:
 
-## v1.4 switch handoff fix
+```kotlin
+// settings.gradle.kts
+include(":video-message-recorder")
+```
 
-- Concurrent standby camera still runs at <=30 fps while a 60 fps recording is active.
-- Both sessions declare the requested recording FPS through SessionConfiguration session parameters, avoiding a cold vendor 30->60 session-mode reconfiguration on switch.
-- A switch no longer detaches the current preview/encoder immediately after promoting the standby camera. The old camera remains visible/encoded until two capture results confirm the target camera has reached the requested cadence (300 ms safety timeout).
-- After the handoff the old camera is demoted back to <=30 fps, so dual 60 fps remains only a short transition window.
+```kotlin
+// app/build.gradle.kts
+dependencies {
+    implementation(project(":video-message-recorder"))
+}
+```
+
+### 2. AAR
+
+Build the release AAR:
+
+```bash
+./gradlew :video-message-recorder:assembleRelease
+```
+
+The artifact is created in:
+
+```text
+video-message-recorder/build/outputs/aar/
+```
+
+Copy it to the consumer project, for example:
+
+```text
+app/libs/video-message-recorder-release.aar
+```
+
+and add:
+
+```kotlin
+dependencies {
+    implementation(files("libs/video-message-recorder-release.aar"))
+}
+```
+
+### 3. Maven Local
+
+Useful for testing the packaged library from a separate Android project:
+
+```bash
+./gradlew :video-message-recorder:publishToMavenLocal
+```
+
+Add `mavenLocal()` to the consumer project:
+
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        mavenLocal()
+    }
+}
+```
+
+Then:
+
+```kotlin
+dependencies {
+    implementation(
+        "io.github.webarmour:video-message-recorder:0.0.1"
+    )
+}
+```
+
+> The library is not published to a public Maven repository yet. The coordinate above currently works with `mavenLocal()` after local publication.
+
+## Quick start
+
+Create the recorder. `RecordingMode.Auto` is the recommended default:
+
+```kotlin
+val recorder = VideoMessageRecorder(
+    context = context.applicationContext,
+    mode = RecordingMode.Auto,
+    onState = { state ->
+        if (state.cameraReady) {
+            // Recorder is ready.
+        }
+    },
+    onRecordingFinished = { result ->
+        val videoFile = result.file
+
+        // Upload, move, copy or delete the MP4.
+    },
+)
+```
+
+Pass the permission result:
+
+```kotlin
+recorder.setPermissionGranted(
+    cameraGranted && microphoneGranted
+)
+```
+
+Forward lifecycle events:
+
+```kotlin
+recorder.onStart()
+recorder.onStop()
+recorder.close()
+```
+
+Attach your preview `Surface`:
+
+```kotlin
+recorder.attachPreview(
+    surface = surface,
+    width = width,
+    height = height,
+    displayRotation = displayRotation,
+)
+```
+
+Recording controls:
+
+```kotlin
+recorder.startRecording()
+recorder.stopRecording()
+
+recorder.switchCamera()
+recorder.updateZoomRatio(1.5f)
+```
+
+The result is returned through `onRecordingFinished`:
+
+```kotlin
+result.file          // finalized MP4
+result.baseName      // generated recording name
+result.config        // actual RecordingConfig
+result.telemetryCsv  // null unless telemetry is enabled
+```
+
+### Custom configuration
+
+Use AUTO unless the application explicitly needs fixed parameters:
+
+```kotlin
+val recorder = VideoMessageRecorder(
+    context = context,
+    mode = RecordingMode.Custom(
+        RecordingConfig(
+            quality = VideoQuality.TELEGRAM_NOTE_MAX,
+            frameRate = 30,
+            videoBitrate = 1_500_000,
+            circleMaskInSavedVideo = false,
+        )
+    ),
+)
+```
+
+See [`docs/INTEGRATION.md`](docs/INTEGRATION.md) for the complete API and configuration options.
+
+---
+
+# Русский
+
+## Возможности / сценарии использования
+
+Библиотека предназначена для видеосообщений внутри чатов, мессенджеров, социальных приложений и других встроенных сценариев записи видео.
+
+Поддерживаются:
+
+- запись квадратного видео с фронтальной или основной камеры;
+- переключение front/rear камеры во время активной записи;
+- zoom во время записи;
+- автоматический подбор параметров под возможности устройства;
+- ручная настройка параметров записи;
+- круглый preview на стороне приложения;
+- опциональная круглая маска непосредственно в сохранённом MP4;
+- опциональная CSV-диагностика/telemetry.
+
+Библиотека управляет камерой и encoding pipeline. UI, runtime permissions, хранение файла, upload и отправка сообщения остаются на стороне приложения.
+
+**Требования:** Android API 28+, runtime permissions `CAMERA` и `RECORD_AUDIO`.
+
+## Подключение
+
+### 1. Локальный Gradle module
+
+Для разработки или подключения исходного модуля напрямую:
+
+```kotlin
+// settings.gradle.kts
+include(":video-message-recorder")
+```
+
+```kotlin
+// app/build.gradle.kts
+dependencies {
+    implementation(project(":video-message-recorder"))
+}
+```
+
+### 2. AAR
+
+Собрать release AAR:
+
+```bash
+./gradlew :video-message-recorder:assembleRelease
+```
+
+Файл появится в:
+
+```text
+video-message-recorder/build/outputs/aar/
+```
+
+Скопировать его в consumer-проект, например:
+
+```text
+app/libs/video-message-recorder-release.aar
+```
+
+и подключить:
+
+```kotlin
+dependencies {
+    implementation(files("libs/video-message-recorder-release.aar"))
+}
+```
+
+### 3. Maven Local
+
+Удобно для проверки упакованной библиотеки из отдельного тестового Android-проекта:
+
+```bash
+./gradlew :video-message-recorder:publishToMavenLocal
+```
+
+В consumer-проекте добавить:
+
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        mavenLocal()
+    }
+}
+```
+
+и dependency:
+
+```kotlin
+dependencies {
+    implementation(
+        "io.github.webarmour:video-message-recorder:0.0.1"
+    )
+}
+```
+
+> Сейчас библиотека ещё не опубликована в публичном Maven-репозитории. Указанная dependency работает через `mavenLocal()` после локальной публикации.
+
+## Быстрый старт
+
+Рекомендуемый режим — `RecordingMode.Auto`:
+
+```kotlin
+val recorder = VideoMessageRecorder(
+    context = context.applicationContext,
+    mode = RecordingMode.Auto,
+    onState = { state ->
+        if (state.cameraReady) {
+            // Камера готова к записи.
+        }
+    },
+    onRecordingFinished = { result ->
+        val videoFile = result.file
+
+        // Загрузить, переместить, скопировать
+        // или удалить готовый MP4.
+    },
+)
+```
+
+Передать результат runtime permissions:
+
+```kotlin
+recorder.setPermissionGranted(
+    cameraGranted && microphoneGranted
+)
+```
+
+Передавать lifecycle:
+
+```kotlin
+recorder.onStart()
+recorder.onStop()
+recorder.close()
+```
+
+Передать `Surface` для preview:
+
+```kotlin
+recorder.attachPreview(
+    surface = surface,
+    width = width,
+    height = height,
+    displayRotation = displayRotation,
+)
+```
+
+Управление записью:
+
+```kotlin
+recorder.startRecording()
+recorder.stopRecording()
+
+recorder.switchCamera()
+recorder.updateZoomRatio(1.5f)
+```
+
+Готовый результат приходит в `onRecordingFinished`:
+
+```kotlin
+result.file          // готовый MP4
+result.baseName      // имя записи
+result.config        // фактически использованный RecordingConfig
+result.telemetryCsv  // null, если telemetry выключена
+```
+
+### Свои параметры записи
+
+AUTO рекомендуется для обычного использования. `Custom` нужен, когда приложению действительно необходимы конкретные параметры:
+
+```kotlin
+val recorder = VideoMessageRecorder(
+    context = context,
+    mode = RecordingMode.Custom(
+        RecordingConfig(
+            quality = VideoQuality.TELEGRAM_NOTE_MAX,
+            frameRate = 30,
+            videoBitrate = 1_500_000,
+            circleMaskInSavedVideo = false,
+        )
+    ),
+)
+```
+
+Полное описание API и параметров находится в [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
