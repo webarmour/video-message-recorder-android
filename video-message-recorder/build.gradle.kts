@@ -11,7 +11,7 @@ group =
     "io.github.webarmour"
 
 version =
-    "0.0.1"
+    "0.0.2"
 
 android {
     namespace = "io.github.webarmour.videomessagerecorder"
