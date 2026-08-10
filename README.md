@@ -1,4 +1,4 @@
-# CameraPipelineLab
+# VideoMessageRecorder
 
 Experimental Camera2 / OpenGL / MediaCodec video-message pipeline.
 
