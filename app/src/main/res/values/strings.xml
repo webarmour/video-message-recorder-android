@@ -1,0 +1,236 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Camera Pipeline Lab</string>
+
+    <!-- General -->
+    <string name="unknown">Unknown</string>
+    <string name="not_available">—</string>
+    <string name="option_oem">OEM</string>
+    <string name="option_off">Off</string>
+    <string name="option_on">On</string>
+    <string name="option_auto">Auto</string>
+    <string name="option_manual">Manual</string>
+    <string name="option_minimal">Minimal</string>
+    <string name="option_fast">Fast</string>
+    <string name="option_high_quality">HQ</string>
+    <string name="option_video">Video</string>
+    <string name="option_preview">Preview</string>
+    <string name="option_continuous">Continuous</string>
+    <string name="option_iso">ISO</string>
+    <string name="option_shutter">Shutter</string>
+    <string name="option_cct">CCT</string>
+    <string name="option_yes">yes</string>
+    <string name="option_no">no</string>
+    <string name="option_50_hz">50 Hz</string>
+    <string name="option_60_hz">60 Hz</string>
+
+    <!-- Main screen -->
+    <string name="grant_permissions">Grant permissions</string>
+    <string name="record">Record</string>
+    <string name="stop">Stop</string>
+    <string name="camera_front">Front</string>
+    <string name="camera_rear_wide">Rear wide</string>
+    <string name="camera_rear_zoom">Rear %1$.1f×</string>
+    <string name="camera_rear_one_x">Rear 1×</string>
+    <string name="camera_generic">camera</string>
+    <string name="dual_prewarm">dual prewarm</string>
+    <string name="single_camera">single camera</string>
+    <string name="camera_mode_summary">%1$s · %2$s</string>
+    <string name="camera_mode_summary_nr">%1$s · %2$s · NR=%3$d</string>
+    <string name="recording_settings">Recording settings</string>
+    <string name="advanced">Advanced</string>
+    <string name="camera_prewarmed_preview_on_record">Camera prewarmed\nPreview opens with Record</string>
+    <string name="prewarming_camera">Prewarming camera…</string>
+    <string name="camera_microphone_permissions_required">Camera and microphone permissions are required</string>
+    <string name="zoom_summary">Zoom · %1$.2f× · pinch preview or use slider</string>
+
+    <!-- Basic recording settings -->
+    <string name="quality_output">Quality / output</string>
+    <string name="quality_supported_hint">Only sizes supported by both Camera2 and the AVC encoder at the selected FPS are shown.</string>
+    <string name="quality_generic">%1$d×%2$d</string>
+    <string name="quality_telegram_max">640 · TG max</string>
+    <string name="quality_full_hd">1080² · FHD source</string>
+    <string name="quality_qhd">1440² · QHD source</string>
+    <string name="video_bitrate">Video bitrate · %1$s</string>
+    <string name="frame_rate">Frame rate</string>
+    <string name="fps_value">%1$d fps</string>
+    <string name="hold_fps_low_light">Hold FPS in low light</string>
+    <string name="hold_fps_active">Camera is constrained to at least %1$d fps</string>
+    <string name="hold_fps_unsupported">Unsupported with the current camera/exposure settings</string>
+    <string name="hold_fps_adaptive">AE may lower FPS to gain exposure</string>
+    <string name="ae_ranges">AE ranges: %1$s</string>
+    <string name="ae_ranges_selected">AE ranges: %1$s · selected %2$d-%3$d</string>
+    <string name="noise_reduction">Noise reduction</string>
+    <string name="noise_reduction_minimal_hint">Minimal is the default for this lab: less temporal smoothing while keeping basic sensor cleanup.</string>
+    <string name="encoder">Encoder</string>
+    <string name="b_frames">B-frames</string>
+    <string name="circle_mask_saved_mp4">Circle mask in saved MP4</string>
+    <string name="circle_mask_saved_mp4_hint">Blackens pixels outside the visible circle.</string>
+    <string name="hide_preview_until_record">Hide preview until Record</string>
+    <string name="hide_preview_until_record_hint">Camera stays prewarmed even while the viewfinder is hidden.</string>
+
+    <!-- Advanced: exposure -->
+    <string name="section_exposure">Exposure</string>
+    <string name="advanced_exposure_description">AUTO keeps exposure under the OEM ISP/AE. MANUAL fixes shutter and ISO and is mainly useful for controlled tests.</string>
+    <string name="advanced_exposure_recommendation">Flagships: use AUTO for normal recording; use MANUAL only under stable lighting.</string>
+    <string name="android_low_light_boost">Android low-light boost</string>
+    <string name="low_light_boost_subtitle">OEM brightness-priority AE</string>
+    <string name="low_light_boost_subtitle_lux">OEM brightness-priority AE · %1$.1f–%2$.1f lux</string>
+    <string name="advanced_low_light_boost_description">Asks the OEM pipeline to prioritize brightness in very dark scenes. It can increase noise and work against a strict frame-rate target.</string>
+    <string name="advanced_low_light_boost_recommendation">Flagships: keep OFF for Telegram-like smooth 30 fps; enable only when brightness matters more than motion clarity.</string>
+    <string name="ae_priority">AE priority</string>
+    <string name="advanced_ae_priority_description">Shutter priority constrains exposure time while AE varies ISO; ISO priority does the opposite.</string>
+    <string name="advanced_ae_priority_recommendation">Flagships: OFF by default. Shutter priority is useful for testing a fixed 1/30 exposure in low light.</string>
+    <string name="priority_shutter">Priority shutter · %1$s</string>
+    <string name="priority_iso">Priority ISO · %1$d</string>
+    <string name="exposure_compensation">Exposure compensation · %1$s</string>
+    <string name="advanced_exposure_compensation_description">Biases the target brightness of automatic exposure without switching to Manual.</string>
+    <string name="advanced_exposure_compensation_recommendation">Flagships: keep 0 EV. Change only when the OEM consistently under- or overexposes the subject.</string>
+    <string name="ae_lock">AE lock</string>
+    <string name="ae_lock_hint">Freeze automatic exposure</string>
+    <string name="shutter">Shutter · %1$s</string>
+    <string name="iso">ISO · %1$d</string>
+    <string name="anti_banding">Anti-banding</string>
+    <string name="advanced_antibanding_description">Aligns exposure timing with mains-powered lighting to reduce flicker and banding.</string>
+    <string name="advanced_antibanding_recommendation">Flagships: AUTO. Force 50 Hz in Europe/Russia or 60 Hz in the US and some Asian regions only when AUTO gets it wrong.</string>
+
+    <!-- Advanced: white balance -->
+    <string name="section_white_balance">White balance</string>
+    <string name="awb_incandescent">Incandescent</string>
+    <string name="awb_fluorescent">Fluorescent</string>
+    <string name="awb_warm_fluorescent">Warm fluorescent</string>
+    <string name="awb_daylight">Daylight</string>
+    <string name="awb_cloudy">Cloudy</string>
+    <string name="awb_twilight">Twilight</string>
+    <string name="awb_shade">Shade</string>
+    <string name="advanced_awb_description">Controls white balance. AUTO tracks lighting changes; fixed presets reduce color shifts in controlled light.</string>
+    <string name="advanced_awb_recommendation">Flagships: use AUTO. Fix white balance only under constant lighting or for A/B tests.</string>
+    <string name="awb_lock">AWB lock</string>
+    <string name="awb_lock_hint">Freeze the current white balance</string>
+    <string name="color_correction">Color correction</string>
+    <string name="advanced_color_correction_description">Selects the standard Camera2 color-correction pipeline. FAST targets realtime video; CCT exposes manual Kelvin and Tint.</string>
+    <string name="advanced_color_correction_recommendation">Flagships: FAST. Use CCT only under controlled lighting or for color-rendering comparisons.</string>
+    <string name="color_temperature">Color temperature · %1$d K</string>
+    <string name="color_tint">Color tint · %1$d</string>
+
+    <!-- Advanced: focus/lens -->
+    <string name="section_focus">Focus</string>
+    <string name="advanced_focus_description">Continuous Video keeps AF tracking motion. Manual fixes the focus plane.</string>
+    <string name="advanced_focus_recommendation">Flagships: Continuous Video. Use Manual only on a tripod or at a fixed subject distance.</string>
+    <string name="focus_distance">Focus distance · %1$.2f D</string>
+    <string name="aperture">Aperture</string>
+    <string name="aperture_value">f/%1$.1f</string>
+    <string name="advanced_aperture_description">Only available on cameras with a physically variable aperture. Lower f-numbers admit more light and reduce depth of field.</string>
+    <string name="advanced_aperture_recommendation">Flagships: use OEM so the manufacturer can select the aperture for the scene.</string>
+
+    <!-- Advanced: stabilization -->
+    <string name="section_stabilization">Stabilization</string>
+    <string name="advanced_stabilization_description">Preview stabilization requests a stabilized viewfinder and recording path; Video is the conventional EIS mode.</string>
+    <string name="advanced_stabilization_recommendation">Flagships: use Preview when available, otherwise Video or OEM. Use OFF only to measure raw camera movement.</string>
+    <string name="optical_stabilization">Optical stabilization</string>
+    <string name="advanced_ois_description">Controls physical optical stabilization when the Camera2 HAL exposes the control.</string>
+    <string name="advanced_ois_recommendation">Flagships: use OEM. Do not force OIS together with aggressive EIS without a separate A/B test.</string>
+
+    <!-- Advanced: ISP -->
+    <string name="section_isp_processing">ISP processing</string>
+    <string name="hot_pixel_correction">Hot-pixel correction</string>
+    <string name="hot_pixel_description">Suppresses isolated hot or defective sensor pixels.</string>
+    <string name="hot_pixel_recommendation">Flagships: FAST for realtime video; use OFF only to inspect raw sensor behavior.</string>
+    <string name="lens_shading_correction">Lens shading correction</string>
+    <string name="lens_shading_description">Compensates lens vignetting and color shading toward frame edges.</string>
+    <string name="lens_shading_recommendation">Flagships: FAST. OFF is useful only for diagnostic ISP comparisons.</string>
+    <string name="edge_enhancement">Edge enhancement / sharpening</string>
+    <string name="edge_enhancement_description">Adds edge sharpening. Aggressive processing can emphasize noise and halos.</string>
+    <string name="edge_enhancement_recommendation">Flagships: FAST is a safe realtime baseline; use OFF when you want a more natural image for later processing.</string>
+    <string name="lens_distortion_correction">Lens distortion correction</string>
+    <string name="lens_distortion_description">Corrects geometric lens distortion, especially visible on ultrawide cameras.</string>
+    <string name="lens_distortion_recommendation">Flagships: FAST. Use OFF only to compare the uncorrected sensor/lens geometry.</string>
+    <string name="chromatic_aberration_correction">Chromatic aberration correction</string>
+    <string name="chromatic_aberration_description">Reduces colored fringes around high-contrast edges.</string>
+    <string name="chromatic_aberration_recommendation">Flagships: FAST for video. HQ is useful only if the HAL still sustains the requested FPS.</string>
+    <string name="tonemap">Tonemap</string>
+    <string name="tonemap_description">Maps sensor dynamic range into the SDR image before the BT.709 encode stage.</string>
+    <string name="tonemap_recommendation">Flagships: FAST for continuous video. Test HQ separately at 30 fps because it can increase latency.</string>
+
+    <!-- Capabilities -->
+    <string name="section_device_capabilities">Device capabilities</string>
+    <string name="camera2_level_legacy">LEGACY</string>
+    <string name="camera2_level_limited">LIMITED</string>
+    <string name="camera2_level_full">FULL</string>
+    <string name="camera2_level_3">LEVEL_3</string>
+    <string name="camera2_level_external">EXTERNAL</string>
+    <string name="camera2_level_unknown">UNKNOWN</string>
+    <string name="capability_camera2">Camera2 %1$s</string>
+    <string name="capability_manual_sensor">manual sensor=%1$s</string>
+    <string name="capability_low_light_boost">low-light boost=%1$s</string>
+    <string name="capability_cct_color">CCT/color=yes</string>
+    <string name="capability_ae_priority">AE priority=yes</string>
+    <string name="capability_zoom">zoom %1$.1f–%2$.1f×</string>
+    <string name="capability_aperture">aperture=%1$s</string>
+    <string name="supported_square_encode_sizes">Supported square encode sizes: %1$s</string>
+    <string name="vendor_request_tags_exposed">Vendor request tags exposed: %1$d</string>
+    <string name="vendor_tags_description">Vendor tags are diagnostic only. Unknown OEM keys are not written automatically because their types and valid ranges are not standardized.</string>
+    <string name="vendor_tags_recommendation">Flagships: compare standard Camera2 controls first; add vendor keys only after documenting the specific tag.</string>
+
+    <!-- Metrics -->
+    <string name="metrics_low_light_active">LLB active</string>
+    <string name="metrics_low_light_idle">LLB idle</string>
+    <string name="sensor_metrics">Sensor: %1$s fps · exposure %2$s · ISO %3$s%4$s</string>
+    <string name="pipeline_metrics">Pipeline: estimated source drops %1$d · encoder stalls %2$d</string>
+    <string name="not_exposed_by_camera">Not exposed by this camera</string>
+    <string name="recommendation_prefix">Recommendation: %1$s</string>
+
+    <!-- Formatting -->
+    <string name="format_fps_decimal">%1$.1f</string>
+    <string name="ae_range_item">%1$d-%2$d</string>
+    <string name="separator_middle_dot"> · </string>
+    <string name="metrics_suffix"> · %1$s</string>
+    <string name="ellipsis_suffix"> …</string>
+    <string name="spoiler_expanded">▲</string>
+    <string name="spoiler_collapsed">▼</string>
+    <string name="format_mbps">%1$.1f Mbps</string>
+    <string name="format_milliseconds">%1$.2f ms</string>
+    <string name="format_seconds">%1$.2f s</string>
+    <string name="format_shutter_fraction">1/%1$d s</string>
+    <string name="format_ev">%1$+.2f EV</string>
+
+    <!-- Controller statuses -->
+    <string name="status_waiting_for_camera">Waiting for camera</string>
+    <string name="status_switching_prewarmed">Switching to %1$s · prewarmed</string>
+    <string name="status_switching_audio_continues">Switching to %1$s · audio continues</string>
+    <string name="status_reconfiguring_camera_source">Reconfiguring camera source</string>
+    <string name="status_preparing_cameras">Preparing cameras</string>
+    <string name="status_opening_both_for_prewarm">Opening front + rear cameras for prewarm</string>
+    <string name="status_opening_camera">Opening %1$s</string>
+    <string name="status_warming_camera">Warming %1$s · waiting for stable 3A</string>
+    <string name="status_recording_camera_audio_uninterrupted">Recording · %1$s · audio uninterrupted</string>
+    <string name="status_ready_camera">Ready · %1$s</string>
+    <string name="status_starting_recorder">Starting recorder from prewarmed %1$s</string>
+    <string name="status_recording_details">Recording · %1$s · %2$d×%3$d · %4$d fps · %5$s · B=%6$d</string>
+    <string name="status_finalizing_mp4">Finalizing MP4</string>
+    <string name="status_saved_with_csv">Saved MP4 + capture CSV</string>
+    <string name="status_saved_csv_failed">Saved MP4 · telemetry CSV failed</string>
+    <string name="status_concurrent_unavailable">Concurrent prewarm unavailable · using audio-safe camera swap</string>
+    <string name="status_restoring_camera">%1$s · restoring %2$s</string>
+    <string name="status_ready_details">Ready · %1$s · %2$s · %3$d fps · AE %4$s · %5$s · %6$s</string>
+    <string name="status_adaptive_ae">adaptive AE</string>
+    <string name="status_fps_hold_active">FPS hold active</string>
+    <string name="status_fps_hold_unsupported">FPS hold unsupported</string>
+    <string name="status_default_range">default</string>
+    <string name="status_prewarmed">prewarmed</string>
+    <string name="status_warming">warming</string>
+    <string name="status_dual_camera_prewarm">dual-camera prewarm</string>
+    <string name="status_single_camera">single-camera</string>
+
+    <!-- Controller errors -->
+    <string name="error_unable_prepare_camera">Unable to prepare camera</string>
+    <string name="error_microphone_permission_missing">Microphone permission is missing</string>
+    <string name="error_cannot_guarantee_fps">Camera cannot guarantee %1$d fps with advertised AE ranges. Disable Hold FPS or choose another FPS.</string>
+    <string name="error_start_failed">Start failed: %1$s</string>
+    <string name="error_stop_failed">Stop failed: %1$s</string>
+    <string name="error_camera_disconnected">Camera disconnected</string>
+    <string name="error_camera_code">Camera error %1$d</string>
+    <string name="error_session_configuration_failed">Camera session configuration failed</string>
+    <string name="error_repeating_request_failed">Repeating request failed: %1$s</string>
+    <string name="error_activate_camera_failed">Unable to activate camera: %1$s</string>
+</resources>

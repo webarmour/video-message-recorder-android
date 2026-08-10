@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="unknown">Unknown</string>
+    <string name="camera_front">Front</string>
+    <string name="camera_rear_wide">Rear wide</string>
+    <string name="camera_rear_zoom">Rear %1$.1f×</string>
+    <string name="camera_rear_one_x">Rear 1×</string>
+    <string name="camera_generic">camera</string>
+    <string name="camera2_level_legacy">LEGACY</string>
+    <string name="camera2_level_limited">LIMITED</string>
+    <string name="camera2_level_full">FULL</string>
+    <string name="camera2_level_3">LEVEL_3</string>
+    <string name="camera2_level_external">EXTERNAL</string>
+    <string name="camera2_level_unknown">UNKNOWN</string>
+    <string name="format_mbps">%1$.1f Mbps</string>
+    <string name="status_waiting_for_camera">Waiting for camera</string>
+    <string name="status_switching_prewarmed">Switching to %1$s · prewarmed</string>
+    <string name="status_switching_audio_continues">Switching to %1$s · audio continues</string>
+    <string name="status_reconfiguring_camera_source">Reconfiguring camera source</string>
+    <string name="status_preparing_cameras">Preparing cameras</string>
+    <string name="status_opening_both_for_prewarm">Opening front + rear cameras for prewarm</string>
+    <string name="status_opening_camera">Opening %1$s</string>
+    <string name="status_warming_camera">Warming %1$s · waiting for stable 3A</string>
+    <string name="status_recording_camera_audio_uninterrupted">Recording · %1$s · audio uninterrupted</string>
+    <string name="status_ready_camera">Ready · %1$s</string>
+    <string name="status_starting_recorder">Starting recorder from prewarmed %1$s</string>
+    <string name="status_recording_details">Recording · %1$s · %2$d×%3$d · %4$d fps · %5$s · B=%6$d</string>
+    <string name="status_finalizing_mp4">Finalizing MP4</string>
+    <string name="status_concurrent_unavailable">Concurrent prewarm unavailable · using audio-safe camera swap</string>
+    <string name="status_restoring_camera">%1$s · restoring %2$s</string>
+    <string name="status_ready_details">Ready · %1$s · %2$s · %3$d fps · AE %4$s · %5$s · %6$s</string>
+    <string name="status_adaptive_ae">adaptive AE</string>
+    <string name="status_fps_hold_active">FPS hold active</string>
+    <string name="status_fps_hold_unsupported">FPS hold unsupported</string>
+    <string name="status_default_range">default</string>
+    <string name="status_prewarmed">prewarmed</string>
+    <string name="status_warming">warming</string>
+    <string name="status_dual_camera_prewarm">dual-camera prewarm</string>
+    <string name="status_single_camera">single-camera</string>
+    <string name="error_unable_prepare_camera">Unable to prepare camera</string>
+    <string name="error_microphone_permission_missing">Microphone permission is missing</string>
+    <string name="error_cannot_guarantee_fps">Camera cannot guarantee %1$d fps with advertised AE ranges. Disable Hold FPS or choose another FPS.</string>
+    <string name="error_start_failed">Start failed: %1$s</string>
+    <string name="error_stop_failed">Stop failed: %1$s</string>
+    <string name="error_camera_disconnected">Camera disconnected</string>
+    <string name="error_camera_code">Camera error %1$d</string>
+    <string name="error_session_configuration_failed">Camera session configuration failed</string>
+    <string name="error_repeating_request_failed">Repeating request failed: %1$s</string>
+    <string name="error_activate_camera_failed">Unable to activate camera: %1$s</string>
+    <string name="status_recording_ready">Recording ready</string>
+</resources>

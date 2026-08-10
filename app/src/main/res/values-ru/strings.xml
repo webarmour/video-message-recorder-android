@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Camera Pipeline Lab</string>
+
+    <string name="unknown">Неизвестно</string>
+    <string name="not_available">—</string>
+    <string name="option_oem">OEM</string>
+    <string name="option_off">Выкл.</string>
+    <string name="option_on">Вкл.</string>
+    <string name="option_auto">Авто</string>
+    <string name="option_manual">Ручной</string>
+    <string name="option_minimal">Минимальное</string>
+    <string name="option_fast">Быстрое</string>
+    <string name="option_high_quality">HQ</string>
+    <string name="option_video">Видео</string>
+    <string name="option_preview">Превью</string>
+    <string name="option_continuous">Непрерывный</string>
+    <string name="option_iso">ISO</string>
+    <string name="option_shutter">Выдержка</string>
+    <string name="option_cct">CCT</string>
+    <string name="option_yes">да</string>
+    <string name="option_no">нет</string>
+    <string name="option_50_hz">50 Гц</string>
+    <string name="option_60_hz">60 Гц</string>
+
+    <string name="grant_permissions">Выдать разрешения</string>
+    <string name="record">Запись</string>
+    <string name="stop">Стоп</string>
+    <string name="camera_front">Фронтальная</string>
+    <string name="camera_rear_wide">Задняя широкоугольная</string>
+    <string name="camera_rear_zoom">Задняя %1$.1f×</string>
+    <string name="camera_rear_one_x">Задняя 1×</string>
+    <string name="camera_generic">камера</string>
+    <string name="dual_prewarm">обе камеры прогреты</string>
+    <string name="single_camera">одна камера</string>
+    <string name="camera_mode_summary">%1$s · %2$s</string>
+    <string name="camera_mode_summary_nr">%1$s · %2$s · NR=%3$d</string>
+    <string name="recording_settings">Настройки записи</string>
+    <string name="advanced">Дополнительно</string>
+    <string name="camera_prewarmed_preview_on_record">Камера прогрета\nПревью появится при записи</string>
+    <string name="prewarming_camera">Прогрев камеры…</string>
+    <string name="camera_microphone_permissions_required">Нужны разрешения на камеру и микрофон</string>
+    <string name="zoom_summary">Зум · %1$.2f× · сведите/разведите два пальца или используйте ползунок</string>
+
+    <string name="quality_output">Качество / выход</string>
+    <string name="quality_supported_hint">Показываются только размеры, которые одновременно поддерживают Camera2 и AVC-энкодер при выбранном FPS.</string>
+    <string name="quality_generic">%1$d×%2$d</string>
+    <string name="quality_telegram_max">640 · максимум TG</string>
+    <string name="quality_full_hd">1080² · источник FHD</string>
+    <string name="quality_qhd">1440² · источник QHD</string>
+    <string name="video_bitrate">Битрейт видео · %1$s</string>
+    <string name="frame_rate">Частота кадров</string>
+    <string name="fps_value">%1$d fps</string>
+    <string name="hold_fps_low_light">Удерживать FPS при слабом свете</string>
+    <string name="hold_fps_active">Камера ограничена минимум %1$d fps</string>
+    <string name="hold_fps_unsupported">Недоступно с текущими настройками камеры/экспозиции</string>
+    <string name="hold_fps_adaptive">AE может снижать FPS ради более длинной выдержки</string>
+    <string name="ae_ranges">Диапазоны AE: %1$s</string>
+    <string name="ae_ranges_selected">Диапазоны AE: %1$s · выбран %2$d-%3$d</string>
+    <string name="noise_reduction">Шумоподавление</string>
+    <string name="noise_reduction_minimal_hint">По умолчанию используется Minimal: меньше временного сглаживания при сохранении базовой очистки сенсора.</string>
+    <string name="encoder">Энкодер</string>
+    <string name="b_frames">B-кадры</string>
+    <string name="circle_mask_saved_mp4">Круговая маска в сохранённом MP4</string>
+    <string name="circle_mask_saved_mp4_hint">Зачерняет пиксели за пределами видимого круга.</string>
+    <string name="hide_preview_until_record">Скрывать превью до записи</string>
+    <string name="hide_preview_until_record_hint">Камера остаётся прогретой, даже когда видоискатель скрыт.</string>
+
+    <string name="section_exposure">Экспозиция</string>
+    <string name="advanced_exposure_description">AUTO оставляет экспозицию под управлением ISP/OEM. MANUAL фиксирует выдержку и ISO и нужен прежде всего для контролируемых тестов.</string>
+    <string name="advanced_exposure_recommendation">На флагманах: AUTO для обычной записи; MANUAL только при стабильном освещении.</string>
+    <string name="android_low_light_boost">Android low-light boost</string>
+    <string name="low_light_boost_subtitle">OEM AE с приоритетом яркости</string>
+    <string name="low_light_boost_subtitle_lux">OEM AE с приоритетом яркости · %1$.1f–%2$.1f люкс</string>
+    <string name="advanced_low_light_boost_description">Просит OEM сильнее поднимать яркость в очень тёмной сцене. Может увеличить шум и конфликтовать с удержанием стабильного FPS.</string>
+    <string name="advanced_low_light_boost_recommendation">На флагманах: выключить для плавных Telegram-подобных 30 fps; включать только когда яркость важнее чёткости движения.</string>
+    <string name="ae_priority">Приоритет AE</string>
+    <string name="advanced_ae_priority_description">Приоритет выдержки удерживает заданную выдержку, а AE меняет ISO; приоритет ISO работает наоборот.</string>
+    <string name="advanced_ae_priority_recommendation">На флагманах: по умолчанию выключено. Приоритет выдержки полезен для тестов 1/30 при слабом свете.</string>
+    <string name="priority_shutter">Приоритет выдержки · %1$s</string>
+    <string name="priority_iso">Приоритет ISO · %1$d</string>
+    <string name="exposure_compensation">Компенсация экспозиции · %1$s</string>
+    <string name="advanced_exposure_compensation_description">Сдвигает целевую яркость автоэкспозиции без перехода в ручной режим.</string>
+    <string name="advanced_exposure_compensation_recommendation">На флагманах: 0 EV. Менять только если OEM системно недо- или переэкспонирует объект.</string>
+    <string name="ae_lock">Блокировка AE</string>
+    <string name="ae_lock_hint">Зафиксировать автоматическую экспозицию</string>
+    <string name="shutter">Выдержка · %1$s</string>
+    <string name="iso">ISO · %1$d</string>
+    <string name="anti_banding">Антибэндинг</string>
+    <string name="advanced_antibanding_description">Синхронизирует экспозицию с мерцанием сетевого освещения и уменьшает полосы.</string>
+    <string name="advanced_antibanding_recommendation">На флагманах: AUTO. Принудительно 50 Гц — Европа/РФ, 60 Гц — США и часть Азии, только если AUTO ошибается.</string>
+
+    <string name="section_white_balance">Баланс белого</string>
+    <string name="awb_incandescent">Лампа накаливания</string>
+    <string name="awb_fluorescent">Люминесцентный</string>
+    <string name="awb_warm_fluorescent">Тёплый люминесцентный</string>
+    <string name="awb_daylight">Дневной свет</string>
+    <string name="awb_cloudy">Облачно</string>
+    <string name="awb_twilight">Сумерки</string>
+    <string name="awb_shade">Тень</string>
+    <string name="advanced_awb_description">Управляет балансом белого. AUTO отслеживает изменения освещения; фиксированные режимы уменьшают скачки цвета в контролируемом свете.</string>
+    <string name="advanced_awb_recommendation">На флагманах: AUTO. Фиксировать баланс белого только при постоянном освещении или для A/B-тестов.</string>
+    <string name="awb_lock">Блокировка AWB</string>
+    <string name="awb_lock_hint">Зафиксировать текущий баланс белого</string>
+    <string name="color_correction">Цветокоррекция</string>
+    <string name="advanced_color_correction_description">Выбирает стандартный Camera2 color-correction pipeline. FAST рассчитан на realtime-видео; CCT открывает ручные Kelvin и Tint.</string>
+    <string name="advanced_color_correction_recommendation">На флагманах: FAST. CCT использовать только при контролируемом свете или для сравнения цветопередачи.</string>
+    <string name="color_temperature">Цветовая температура · %1$d K</string>
+    <string name="color_tint">Tint · %1$d</string>
+
+    <string name="section_focus">Фокус</string>
+    <string name="advanced_focus_description">Continuous Video постоянно подстраивает AF под движение. Manual фиксирует плоскость фокуса.</string>
+    <string name="advanced_focus_recommendation">На флагманах: Continuous Video. Manual — только на штативе или при фиксированной дистанции.</string>
+    <string name="focus_distance">Дистанция фокуса · %1$.2f D</string>
+    <string name="aperture">Диафрагма</string>
+    <string name="aperture_value">f/%1$.1f</string>
+    <string name="advanced_aperture_description">Доступно только на камерах с физически регулируемой диафрагмой. Меньшее f-число пропускает больше света и уменьшает глубину резкости.</string>
+    <string name="advanced_aperture_recommendation">На флагманах: OEM, чтобы производитель сам выбирал диафрагму под сцену.</string>
+
+    <string name="section_stabilization">Стабилизация</string>
+    <string name="advanced_stabilization_description">Preview stabilization запрашивает стабилизированный видоискатель и путь записи; Video — обычный режим EIS.</string>
+    <string name="advanced_stabilization_recommendation">На флагманах: Preview, если доступен; иначе Video или OEM. OFF — только для измерения реального движения камеры.</string>
+    <string name="optical_stabilization">Оптическая стабилизация</string>
+    <string name="advanced_ois_description">Управляет физической оптической стабилизацией, если Camera2 HAL предоставляет такой контроль.</string>
+    <string name="advanced_ois_recommendation">На флагманах: OEM. Не форсировать OIS вместе с агрессивным EIS без отдельного A/B-теста.</string>
+
+    <string name="section_isp_processing">Обработка ISP</string>
+    <string name="hot_pixel_correction">Коррекция hot pixels</string>
+    <string name="hot_pixel_description">Подавляет одиночные горячие или дефектные пиксели сенсора.</string>
+    <string name="hot_pixel_recommendation">На флагманах: FAST для realtime-видео; OFF только для анализа сырого поведения сенсора.</string>
+    <string name="lens_shading_correction">Коррекция lens shading</string>
+    <string name="lens_shading_description">Компенсирует виньетирование и цветовой сдвиг к краям кадра.</string>
+    <string name="lens_shading_recommendation">На флагманах: FAST. OFF полезен только для диагностического сравнения ISP.</string>
+    <string name="edge_enhancement">Резкость / edge enhancement</string>
+    <string name="edge_enhancement_description">Добавляет резкость по границам. Агрессивная обработка может сильнее подчёркивать шум и ореолы.</string>
+    <string name="edge_enhancement_recommendation">На флагманах: FAST как безопасный realtime baseline; OFF — если нужна более естественная картинка для последующей обработки.</string>
+    <string name="lens_distortion_correction">Коррекция дисторсии объектива</string>
+    <string name="lens_distortion_description">Исправляет геометрическую дисторсию, особенно заметную на сверхширокоугольной камере.</string>
+    <string name="lens_distortion_recommendation">На флагманах: FAST. OFF — только для сравнения неисправленной геометрии сенсора/объектива.</string>
+    <string name="chromatic_aberration_correction">Коррекция хроматических аберраций</string>
+    <string name="chromatic_aberration_description">Уменьшает цветные каймы на контрастных границах.</string>
+    <string name="chromatic_aberration_recommendation">На флагманах: FAST для видео. HQ имеет смысл, только если HAL продолжает держать требуемый FPS.</string>
+    <string name="tonemap">Tonemap</string>
+    <string name="tonemap_description">Преобразует динамический диапазон сенсора в SDR-картинку перед BT.709 encode.</string>
+    <string name="tonemap_recommendation">На флагманах: FAST для непрерывного видео. HQ тестировать отдельно на 30 fps — он может увеличить задержку.</string>
+
+    <string name="section_device_capabilities">Возможности устройства</string>
+    <string name="camera2_level_legacy">LEGACY</string>
+    <string name="camera2_level_limited">LIMITED</string>
+    <string name="camera2_level_full">FULL</string>
+    <string name="camera2_level_3">LEVEL_3</string>
+    <string name="camera2_level_external">EXTERNAL</string>
+    <string name="camera2_level_unknown">UNKNOWN</string>
+    <string name="capability_camera2">Camera2 %1$s</string>
+    <string name="capability_manual_sensor">ручной сенсор=%1$s</string>
+    <string name="capability_low_light_boost">low-light boost=%1$s</string>
+    <string name="capability_cct_color">CCT/color=да</string>
+    <string name="capability_ae_priority">AE priority=да</string>
+    <string name="capability_zoom">зум %1$.1f–%2$.1f×</string>
+    <string name="capability_aperture">диафрагма=%1$s</string>
+    <string name="supported_square_encode_sizes">Поддерживаемые квадратные размеры encode: %1$s</string>
+    <string name="vendor_request_tags_exposed">Доступно vendor request tags: %1$d</string>
+    <string name="vendor_tags_description">Vendor tags показаны только для диагностики. Неизвестные OEM-ключи не записываются автоматически, потому что их типы и допустимые диапазоны не стандартизированы.</string>
+    <string name="vendor_tags_recommendation">На флагманах: сначала сравнивать стандартные Camera2 controls; vendor keys добавлять только после документирования конкретного тега.</string>
+
+    <string name="metrics_low_light_active">LLB активен</string>
+    <string name="metrics_low_light_idle">LLB неактивен</string>
+    <string name="sensor_metrics">Сенсор: %1$s fps · выдержка %2$s · ISO %3$s%4$s</string>
+    <string name="pipeline_metrics">Пайплайн: оценка потерянных source-кадров %1$d · stalls энкодера %2$d</string>
+    <string name="not_exposed_by_camera">Эта камера не предоставляет настройку</string>
+    <string name="recommendation_prefix">Рекомендация: %1$s</string>
+
+    <string name="format_fps_decimal">%1$.1f</string>
+    <string name="ae_range_item">%1$d-%2$d</string>
+    <string name="separator_middle_dot"> · </string>
+    <string name="metrics_suffix"> · %1$s</string>
+    <string name="ellipsis_suffix"> …</string>
+    <string name="spoiler_expanded">▲</string>
+    <string name="spoiler_collapsed">▼</string>
+    <string name="format_mbps">%1$.1f Мбит/с</string>
+    <string name="format_milliseconds">%1$.2f мс</string>
+    <string name="format_seconds">%1$.2f с</string>
+    <string name="format_shutter_fraction">1/%1$d с</string>
+    <string name="format_ev">%1$+.2f EV</string>
+
+    <string name="status_waiting_for_camera">Ожидание камеры</string>
+    <string name="status_switching_prewarmed">Переключение на %1$s · камера прогрета</string>
+    <string name="status_switching_audio_continues">Переключение на %1$s · аудио продолжается</string>
+    <string name="status_reconfiguring_camera_source">Переконфигурация источника камеры</string>
+    <string name="status_preparing_cameras">Подготовка камер</string>
+    <string name="status_opening_both_for_prewarm">Открытие фронтальной и задней камер для прогрева</string>
+    <string name="status_opening_camera">Открытие %1$s</string>
+    <string name="status_warming_camera">Прогрев %1$s · ожидание стабильного 3A</string>
+    <string name="status_recording_camera_audio_uninterrupted">Запись · %1$s · аудио без прерывания</string>
+    <string name="status_ready_camera">Готово · %1$s</string>
+    <string name="status_starting_recorder">Запуск записи с прогретой камеры %1$s</string>
+    <string name="status_recording_details">Запись · %1$s · %2$d×%3$d · %4$d fps · %5$s · B=%6$d</string>
+    <string name="status_finalizing_mp4">Завершение MP4</string>
+    <string name="status_saved_with_csv">MP4 и capture CSV сохранены</string>
+    <string name="status_saved_csv_failed">MP4 сохранён · telemetry CSV сохранить не удалось</string>
+    <string name="status_concurrent_unavailable">Concurrent prewarm недоступен · используется смена камеры без остановки аудио</string>
+    <string name="status_restoring_camera">%1$s · восстановление %2$s</string>
+    <string name="status_ready_details">Готово · %1$s · %2$s · %3$d fps · AE %4$s · %5$s · %6$s</string>
+    <string name="status_adaptive_ae">адаптивный AE</string>
+    <string name="status_fps_hold_active">удержание FPS активно</string>
+    <string name="status_fps_hold_unsupported">удержание FPS недоступно</string>
+    <string name="status_default_range">по умолчанию</string>
+    <string name="status_prewarmed">прогрета</string>
+    <string name="status_warming">прогревается</string>
+    <string name="status_dual_camera_prewarm">прогреты обе камеры</string>
+    <string name="status_single_camera">одна камера</string>
+
+    <string name="error_unable_prepare_camera">Не удалось подготовить камеру</string>
+    <string name="error_microphone_permission_missing">Нет разрешения на микрофон</string>
+    <string name="error_cannot_guarantee_fps">Камера не может гарантировать %1$d fps с заявленными диапазонами AE. Отключите удержание FPS или выберите другой FPS.</string>
+    <string name="error_start_failed">Ошибка запуска: %1$s</string>
+    <string name="error_stop_failed">Ошибка остановки: %1$s</string>
+    <string name="error_camera_disconnected">Камера отключена</string>
+    <string name="error_camera_code">Ошибка камеры %1$d</string>
+    <string name="error_session_configuration_failed">Не удалось настроить сессию камеры</string>
+    <string name="error_repeating_request_failed">Ошибка repeating request: %1$s</string>
+    <string name="error_activate_camera_failed">Не удалось активировать камеру: %1$s</string>
+</resources>
