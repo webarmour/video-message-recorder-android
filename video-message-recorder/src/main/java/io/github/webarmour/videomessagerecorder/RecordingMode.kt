@@ -5,9 +5,9 @@ import io.github.webarmour.videomessagerecorder.camera.RecordingConfig
 /**
  * Defines how recording parameters are selected.
  *
- * Auto is intended for normal production usage.
- * Custom exposes the existing low-level RecordingConfig for diagnostics,
- * experiments and applications that require explicit camera configuration.
+ * [Auto] is intended for normal production usage.
+ * [Custom] exposes [RecordingConfig] for diagnostics, experiments,
+ * and applications that require explicit recording parameters.
  */
 sealed interface RecordingMode {
 
@@ -16,9 +16,4 @@ sealed interface RecordingMode {
     data class Custom(
         val config: RecordingConfig,
     ) : RecordingMode
-}
-
-enum class DiagnosticsMode {
-    Disabled,
-    TelemetryCsv,
 }
