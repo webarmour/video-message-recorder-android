@@ -3,6 +3,17 @@
 [English](#english) · [Русский](#русский)
 
 Android library for recording short in-app video messages.  
+
+<p align="center">
+  <a href="./docs/images/demo-recording.png">
+    <img
+      src="./docs/images/demo-recording.png"
+      alt="Video Message Recorder demo"
+      width="300"
+    />
+  </a>
+</p>
+
 Built on Camera2, OpenGL/EGL, MediaCodec, AudioRecord and MediaMuxer.
 
 The repository contains:
