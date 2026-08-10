@@ -88,12 +88,6 @@ override fun onDestroy() {
 
 `close()` is terminal. A closed recorder instance must not be reused.
 
-### Current close behavior
-
-The current implementation performs synchronous worker shutdown and waits for internal executors/GL threads. Do not call `close()` from `onRecordingFinished` or another recorder-owned worker callback.
-
-For the current version, close the recorder only during final host teardown and preferably after recording has already stopped. Making close fully non-blocking is tracked as an internal architecture improvement; see [Threading Review](architecture/THREADING_REVIEW.md).
-
 ## Preview Surface
 
 The host owns the preview `Surface`.
