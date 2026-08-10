@@ -2287,26 +2287,126 @@ internal class CameraRecorderController(
         }
     }
 
-    private fun cleanupRecording(deleteTempFile: Boolean) {
-        telemetry.stop()
-        pipelines.values.forEach { pipeline ->
-            runCatching { pipeline.renderer.detachEncoder() }
+    private fun closeCameraSystemAsync() {
+        try {
+            cameraExecutor.execute {
+                try {
+                    /*
+                     * Recording cleanup has already completed before this task
+                     * is scheduled, so renderers are no longer attached to the
+                     * encoder.
+                     *
+                     * Keep Camera2 teardown serialized on cameraExecutor.
+                     */
+                    pipelines.values.forEach(
+                        ::closePipelineCamera
+                    )
+
+                    /*
+                     * Take a snapshot before clearing controller state.
+                     *
+                     * CameraGlRenderer#close() may block while its GL thread
+                     * releases EGL resources, but that happens here on the
+                     * camera worker — never on the caller/main thread.
+                     */
+                    val renderers =
+                        pipelines.values
+                            .map { pipeline ->
+                                pipeline.renderer
+                            }
+
+                    pipelines.clear()
+
+                    pendingActivationRole = null
+                    concurrentCameraPrewarm = false
+                    cameraSystemPrepared = false
+
+                    renderers.forEach { renderer ->
+                        runCatching {
+                            renderer.close()
+                        }.onFailure { error ->
+                            Log.w(
+                                TAG,
+                                "Unable to close camera renderer",
+                                error,
+                            )
+                        }
+                    }
+                } finally {
+                    /*
+                     * shutdown() is non-blocking.
+                     *
+                     * Calling it from the executor's own final task is safe:
+                     * this task completes normally and no new Camera2 work is
+                     * accepted afterwards.
+                     */
+                    cameraExecutor.shutdown()
+                }
+            }
+        } catch (error: RejectedExecutionException) {
+            /*
+             * This should only be possible during an already-running shutdown.
+             * closed is already true, therefore there must be no attempt to
+             * restart camera work here.
+             */
+            Log.d(
+                TAG,
+                "Camera executor already shutting down",
+                error,
+            )
         }
-        runCatching { audioEncoder?.close() }
-        runCatching { videoEncoder?.close() }
-        runCatching { muxer?.close() }
+    }
+
+    private fun cleanupRecording(
+        deleteTempFile: Boolean,
+    ) {
+        telemetry.stop()
+
+        pipelines.values.forEach { pipeline ->
+            runCatching {
+                pipeline.renderer.detachEncoder()
+            }
+        }
+
+        runCatching {
+            audioEncoder?.close()
+        }
+
+        runCatching {
+            videoEncoder?.close()
+        }
+
+        runCatching {
+            muxer?.close()
+        }
 
         audioEncoder = null
         videoEncoder = null
         muxer = null
 
-        if (deleteTempFile) tempFile?.delete()
+        if (deleteTempFile) {
+            tempFile?.delete()
+        }
+
         tempFile = null
         recordingBaseName = null
         activeRecordingConfig = null
         recording = false
 
-        runCatching { updateActivePreviewVisibility() }
+        /*
+         * During normal recording cleanup we restore preview visibility.
+         *
+         * During controller shutdown this is unnecessary and, more importantly,
+         * would synchronously wait for the GL thread through
+         * CameraGlRenderer#setPreviewContentVisible().
+         *
+         * The renderer will be released by the camera teardown stage anyway.
+         */
+        if (!closed.get()) {
+            runCatching {
+                updateActivePreviewVisibility()
+            }
+        }
     }
 
     private fun attachPreviewToActiveRenderer() {
@@ -2821,29 +2921,103 @@ internal class CameraRecorderController(
         )
 
     override fun close() {
-        if (!closed.compareAndSet(false, true)) return
+        if (
+            !closed.compareAndSet(
+                false,
+                true,
+            )
+        ) {
+            return
+        }
+
         lifecycleActive = false
 
-        closeAllCameraDevices()
-
-        recordingExecutor.execute {
-            cleanupRecording(deleteTempFile = true)
-            recordingTransition.set(false)
-        }
-        recordingExecutor.shutdown()
-        recordingExecutor.awaitTermination(5, TimeUnit.SECONDS)
-
+        /*
+         * Invalidate pending debounced CaptureRequest updates immediately.
+         */
         requestRevision.incrementAndGet()
+
+        /*
+         * No more state callbacks should be delivered after the public recorder
+         * has been closed.
+         *
+         * This Handler instance is private to this controller, so removing all
+         * callbacks here does not affect the host application's other handlers.
+         */
+        mainHandler.removeCallbacksAndMessages(
+            null
+        )
+
+        /*
+         * shutdownNow() itself does not wait for termination.
+         *
+         * Scheduled request-update tasks also check closed before doing camera
+         * work, so there is no reason to await this executor on the caller.
+         */
         requestScheduler.shutdownNow()
-        requestScheduler.awaitTermination(1, TimeUnit.SECONDS)
 
-        cameraExecutor.shutdown()
-        cameraExecutor.awaitTermination(2, TimeUnit.SECONDS)
+        /*
+         * Do not wait here.
+         *
+         * Recording teardown is deliberately appended to recordingExecutor.
+         * This gives us two useful properties:
+         *
+         * 1. Any already-running start/stop/finalization operation completes
+         *    before destructive cleanup starts.
+         *
+         * 2. close() is safe even when called from onRecordingFinished(),
+         *    because it only queues this task and returns. The callback can then
+         *    finish, allowing this task to run next.
+         */
+        try {
+            recordingExecutor.execute {
+                try {
+                    cleanupRecording(
+                        deleteTempFile = true
+                    )
+                } catch (error: Throwable) {
+                    Log.w(
+                        TAG,
+                        "Unable to clean up recording during close",
+                        error,
+                    )
+                } finally {
+                    recordingTransition.set(
+                        false
+                    )
 
-        pipelines.values.forEach { pipeline ->
-            runCatching { pipeline.renderer.close() }
+                    /*
+                     * shutdown() does not wait for this executor.
+                     *
+                     * We are already running its final task, so it is safe to
+                     * stop accepting new work now.
+                     */
+                    recordingExecutor.shutdown()
+
+                    /*
+                     * Camera2 and EGL teardown starts only after recording
+                     * resources have been released.
+                     */
+                    closeCameraSystemAsync()
+                }
+            }
+        } catch (error: RejectedExecutionException) {
+            /*
+             * Defensive fallback. Normally only close() shuts down this
+             * executor, and AtomicBoolean above makes close idempotent.
+             */
+            Log.d(
+                TAG,
+                "Recording executor already shutting down",
+                error,
+            )
+
+            recordingTransition.set(
+                false
+            )
+
+            closeCameraSystemAsync()
         }
-        pipelines.clear()
     }
 
     private companion object {
