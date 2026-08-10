@@ -143,24 +143,29 @@ onState → Main
 
 This is part of the current public callback contract.
 
-## Known issue: synchronous close
+## Asynchronous close
 
-Current `CameraRecorderController.close()` is synchronous.
+`VideoMessageRecorder.close()` is non-blocking.
 
-It:
+It marks the controller as closed immediately and schedules teardown through
+the existing serialized recording and camera executors.
 
-1. schedules recording cleanup;
-2. shuts down `recordingExecutor` and waits for termination;
-3. shuts down `requestScheduler` and waits;
-4. shuts down `cameraExecutor` and waits;
-5. closes each renderer;
-6. renderer close itself waits for its GL thread.
+Shutdown order:
 
-Consequences:
+1. stop accepting public recorder work;
+2. cancel pending CaptureRequest debounce work;
+3. release recording/encoder/muxer resources;
+4. close Camera2 sessions/devices;
+5. release GL/EGL renderers;
+6. shut down the internal executors.
 
-- `close()` can block the calling thread;
-- it must not be called from `onRecordingFinished`, because that callback runs on the recording executor;
-- calling it directly from a latency-sensitive main-thread path may cause visible UI stalls on slow/broken devices.
+`CameraGlRenderer.close()` remains synchronous internally, but it is executed
+on the camera worker during controller shutdown and therefore does not block
+the host/main thread.
+
+Calling `close()` from `onRecordingFinished` is safe because close only queues
+the final teardown and returns; it never waits for the recording executor from
+inside that executor.
 
 ### Recommended pre-1.0 fix
 
