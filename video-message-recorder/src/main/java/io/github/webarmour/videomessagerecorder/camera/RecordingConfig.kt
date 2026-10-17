@@ -130,8 +130,8 @@ enum class FocusSetting {
 }
 
 data class RecordingConfig(
-    val quality: VideoQuality = VideoQuality.TELEGRAM_NOTE_MAX,
-    val videoBitrate: Int = 1_500_000,
+    val quality: VideoQuality = VideoQuality.HD,
+    val videoBitrate: Int = 2_500_000,
     val frameRate: Int = 60,
     val iFrameIntervalSeconds: Int = 1,
     val maxBFrames: Int = 2,
