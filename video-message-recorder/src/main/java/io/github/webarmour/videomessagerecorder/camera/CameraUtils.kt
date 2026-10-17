@@ -140,7 +140,7 @@ internal fun avcEncoderSupports(
     runCatching {
         info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
             .videoCapabilities
-            .areSizeAndRateSupported(size.width, size.height, frameRate.toDouble())
+            ?.areSizeAndRateSupported(size.width, size.height, frameRate.toDouble()) == true
     }.getOrDefault(false)
 }
 
