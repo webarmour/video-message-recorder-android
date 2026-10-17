@@ -1,5 +1,7 @@
 package io.github.webarmour.videomessagerecorder.media
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTimestamp
@@ -9,11 +11,12 @@ import android.media.MediaFormat
 import android.media.MediaRecorder
 import android.os.Process
 import android.util.Log
+import androidx.annotation.RequiresPermission
 import io.github.webarmour.videomessagerecorder.camera.RecordingConfig
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
-internal class AudioEncoder(
+internal class AudioEncoder @RequiresPermission(Manifest.permission.RECORD_AUDIO) constructor(
     private val config: RecordingConfig,
     private val muxer: RecordingMuxer,
 ) : AutoCloseable {
@@ -29,6 +32,8 @@ internal class AudioEncoder(
         require(size > 0) { "Unsupported AudioRecord configuration: $size" }
     }
 
+    @get:RequiresPermission(Manifest.permission.RECORD_AUDIO)
+    @SuppressLint("MissingPermission")
     private val audioRecord = AudioRecord.Builder()
         .setAudioSource(MediaRecorder.AudioSource.MIC)
         .setAudioFormat(
@@ -63,6 +68,7 @@ internal class AudioEncoder(
         }
     }
 
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun start() {
         check(recording.compareAndSet(false, true)) { "Audio encoder already started" }
 
