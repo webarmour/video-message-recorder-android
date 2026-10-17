@@ -195,9 +195,9 @@ internal class VideoEncoder(
 
             if (
                 attempt.requestVbr &&
-                encoderCapabilities.isBitrateModeSupported(
+                encoderCapabilities?.isBitrateModeSupported(
                     MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
-                )
+                ) == true
             ) {
                 setInteger(
                     MediaFormat.KEY_BITRATE_MODE,
@@ -206,8 +206,9 @@ internal class VideoEncoder(
             }
 
             if (attempt.requestMaxComplexity) {
-                val complexityRange = encoderCapabilities.complexityRange
-                setInteger(MediaFormat.KEY_COMPLEXITY, complexityRange.upper)
+                encoderCapabilities?.complexityRange?.let { complexityRange ->
+                    setInteger(MediaFormat.KEY_COMPLEXITY, complexityRange.upper)
+                }
             }
         }
     }
@@ -221,11 +222,11 @@ internal class VideoEncoder(
                 runCatching {
                     info.getCapabilitiesForType(MIME)
                         .videoCapabilities
-                        .areSizeAndRateSupported(
+                        ?.areSizeAndRateSupported(
                             size.width,
                             size.height,
                             config.frameRate.toDouble(),
-                        )
+                        ) == true
                 }.getOrDefault(false)
             }
             .sortedWith(
