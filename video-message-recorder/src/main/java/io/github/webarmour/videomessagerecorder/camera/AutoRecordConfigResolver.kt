@@ -460,8 +460,7 @@ internal class AutoRecordingConfigResolver(
 
     private companion object {
 
-        const val TAG =
-            "VideoMessageRecorder"
+        const val TAG = "CameraPipelineLab"
 
         val AUTO_QUALITY_ORDER =
             listOf(

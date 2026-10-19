@@ -1,6 +1,7 @@
 package io.github.webarmour.videomessagerecorder.camera
 
 import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.TotalCaptureResult
 import android.os.Build
 import io.github.webarmour.videomessagerecorder.DiagnosticsMode
@@ -22,7 +23,10 @@ internal class CaptureTelemetry {
         val stabilizationMode: Int?,
         val noiseReductionMode: Int?,
         val focalLength: Float?,
+        val targetZoomRatio: Float,
+        val requestZoomRatio: Float?,
         val zoomRatio: Float?,
+        val activePhysicalCameraId: String?,
     )
 
     private val rows = ArrayList<Row>(1_024)
@@ -62,6 +66,7 @@ internal class CaptureTelemetry {
         result: TotalCaptureResult,
         cameraLabel: String,
         noiseReductionMode: Int?,
+        targetZoomRatio: Float,
     ) {
         if (!collecting) {
             return
@@ -130,6 +135,12 @@ internal class CaptureTelemetry {
                 result.get(
                     CaptureResult.LENS_FOCAL_LENGTH
                 ),
+            targetZoomRatio = targetZoomRatio,
+            requestZoomRatio = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                result.request.get(CaptureRequest.CONTROL_ZOOM_RATIO)
+            } else {
+                null
+            },
             zoomRatio =
                 if (
                     Build.VERSION.SDK_INT >=
@@ -141,6 +152,11 @@ internal class CaptureTelemetry {
                 } else {
                     null
                 },
+            activePhysicalCameraId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                result.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID)
+            } else {
+                null
+            },
         )
     }
 
@@ -168,7 +184,7 @@ internal class CaptureTelemetry {
             appendLine(
                 "camera,frameNumber,sensorTimestampNs,exposureTimeNs,frameDurationNs,iso,aeState," +
                         "aeMode,aePriorityMode,lowLightBoostState,awbState,stabilizationMode,noiseReductionMode," +
-                        "focalLength,zoomRatio"
+                        "focalLength,targetZoomRatio,requestZoomRatio,zoomRatio,activePhysicalCameraId"
             )
 
             rows.forEach { row ->
@@ -226,9 +242,15 @@ internal class CaptureTelemetry {
                     value(row.focalLength)
                 )
                 append(',')
+                append(row.targetZoomRatio)
+                append(',')
+                append(value(row.requestZoomRatio))
+                append(',')
                 append(
                     value(row.zoomRatio)
                 )
+                append(',')
+                append(value(row.activePhysicalCameraId))
                 appendLine()
             }
         }
