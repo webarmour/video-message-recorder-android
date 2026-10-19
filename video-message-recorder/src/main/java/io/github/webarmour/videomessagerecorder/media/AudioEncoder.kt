@@ -19,6 +19,7 @@ import kotlin.math.max
 internal class AudioEncoder @RequiresPermission(Manifest.permission.RECORD_AUDIO) constructor(
     private val config: RecordingConfig,
     private val muxer: RecordingMuxer,
+    private val onFailure: (Throwable) -> Unit = {},
 ) : AutoCloseable {
 
     private val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
@@ -52,6 +53,9 @@ internal class AudioEncoder @RequiresPermission(Manifest.permission.RECORD_AUDIO
     @Volatile
     private var lastPtsUs: Long = 0L
 
+    @Volatile
+    private var drainFailure: Throwable? = null
+
     init {
         val format = MediaFormat.createAudioFormat(
             MediaFormat.MIMETYPE_AUDIO_AAC,
@@ -75,7 +79,13 @@ internal class AudioEncoder @RequiresPermission(Manifest.permission.RECORD_AUDIO
         codec.start()
         audioRecord.startRecording()
 
-        drainThread = Thread(::drainLoop, "AudioEncoderDrain").apply { start() }
+        drainThread = Thread({
+            runCatching { drainLoop() }.onFailure { error ->
+                drainFailure = error
+                Log.e(TAG, "Audio encoder drain failed", error)
+                runCatching { onFailure(error) }
+            }
+        }, "AudioEncoderDrain").apply { start() }
         inputThread = Thread(::inputLoop, "AudioEncoderInput").apply { start() }
     }
 
@@ -86,6 +96,9 @@ internal class AudioEncoder @RequiresPermission(Manifest.permission.RECORD_AUDIO
         inputThread.join(1_500)
         queueEndOfStream()
         drainThread.join(3_000)
+        drainFailure?.let { throw IllegalStateException("Audio encoder drain failed", it) }
+        check(!inputThread.isAlive) { "Audio input did not stop in time" }
+        check(!drainThread.isAlive) { "Audio encoder did not emit EOS in time" }
     }
 
     private fun inputLoop() {

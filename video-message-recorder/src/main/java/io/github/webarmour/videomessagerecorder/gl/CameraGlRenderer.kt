@@ -366,6 +366,15 @@ internal class CameraGlRenderer(
         runCatching {
             surfaceTexture.updateTexImage()
 
+            // Keep the inactive camera's buffer queue moving during prewarm. Its transform and
+            // timestamp are only needed once this renderer has a visible or encoded output.
+            if (encoderEglSurface == EGL14.EGL_NO_SURFACE &&
+                (previewEglSurface == EGL14.EGL_NO_SURFACE || !previewContentVisible)
+            ) {
+                lastSourceTimestampNs = Long.MIN_VALUE
+                return@runCatching
+            }
+
             surfaceTexture.getTransformMatrix(
                 stMatrix
             )
@@ -495,32 +504,15 @@ internal class CameraGlRenderer(
                 }
             }
 
-            if (
-                previewEglSurface !=
-                EGL14.EGL_NO_SURFACE
-            ) {
-                if (previewContentVisible) {
-                    renderTo(
-                        target =
-                            previewEglSurface,
-                        width =
-                            previewWidth,
-                        height =
-                            previewHeight,
-                        circleMask =
-                            true,
-                    )
-                } else {
-                    clearSurface(
-                        target =
-                            previewEglSurface,
-                        width =
-                            previewWidth,
-                        height =
-                            previewHeight,
-                    )
-                }
-
+            // The black frame is published when visibility changes (or the Surface is attached).
+            // Re-publishing that same frame for every camera frame wastes GPU and compositor work.
+            if (previewEglSurface != EGL14.EGL_NO_SURFACE && previewContentVisible) {
+                renderTo(
+                    target = previewEglSurface,
+                    width = previewWidth,
+                    height = previewHeight,
+                    circleMask = true,
+                )
                 swapPreviewBuffers()
             }
         }.onFailure { error ->
