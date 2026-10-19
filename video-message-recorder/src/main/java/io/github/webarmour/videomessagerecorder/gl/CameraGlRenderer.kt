@@ -97,6 +97,10 @@ internal data class RendererPerformanceStats(
     val estimatedSourceDrops: Long,
     val encoderFrames: Long,
     val encoderBackpressureEvents: Long,
+    val previewFrames: Long,
+    val previewBackpressureEvents: Long,
+    val maxEncoderSwapNs: Long,
+    val maxPreviewSwapNs: Long,
 )
 
 internal class CameraGlRenderer(
@@ -120,6 +124,7 @@ internal class CameraGlRenderer(
     private var previewHeight = 1
     private var previewContentVisible = true
     private var hasCameraFrame = false
+    private var previewRenderPending = false
 
     private var encoderEglSurface = EGL14.EGL_NO_SURFACE
     private var encoderSurface: Surface? = null
@@ -137,6 +142,10 @@ internal class CameraGlRenderer(
     private val estimatedSourceDrops = AtomicLong(0L)
     private val encoderFrames = AtomicLong(0L)
     private val encoderBackpressureEvents = AtomicLong(0L)
+    private val previewFrames = AtomicLong(0L)
+    private val previewBackpressureEvents = AtomicLong(0L)
+    @Volatile private var maxEncoderSwapNs = 0L
+    @Volatile private var maxPreviewSwapNs = 0L
 
     private var cameraSurfaceTexture: SurfaceTexture? = null
     private var cameraInputSurface: Surface? = null
@@ -156,6 +165,26 @@ internal class CameraGlRenderer(
     private var viewportSizeLocation = -1
 
     private val stMatrix = FloatArray(16)
+    private val renderPreviewTask = Runnable {
+        previewRenderPending = false
+        if (!hasCameraFrame || !previewContentVisible ||
+            previewEglSurface == EGL14.EGL_NO_SURFACE
+        ) return@Runnable
+
+        runCatching {
+            renderTo(previewEglSurface, previewWidth, previewHeight, circleMask = true)
+            val swapStartedNs = System.nanoTime()
+            val swapped = swapPreviewBuffers()
+            val swapDurationNs = System.nanoTime() - swapStartedNs
+            if (swapped) previewFrames.incrementAndGet()
+            if (swapDurationNs > maxPreviewSwapNs) maxPreviewSwapNs = swapDurationNs
+            if (swapDurationNs > expectedFrameIntervalNs) {
+                previewBackpressureEvents.incrementAndGet()
+            }
+        }.onFailure { error ->
+            Log.e(TAG, "Unable to render preview frame", error)
+        }
+    }
 
     private var vertexBuffer: FloatBuffer = floatBufferOf(*DEFAULT_VERTICES)
     private val textureBuffer: FloatBuffer = floatBufferOf(*DEFAULT_TEX_COORDS)
@@ -321,6 +350,10 @@ internal class CameraGlRenderer(
         estimatedSourceDrops = estimatedSourceDrops.get(),
         encoderFrames = encoderFrames.get(),
         encoderBackpressureEvents = encoderBackpressureEvents.get(),
+        previewFrames = previewFrames.get(),
+        previewBackpressureEvents = previewBackpressureEvents.get(),
+        maxEncoderSwapNs = maxEncoderSwapNs,
+        maxPreviewSwapNs = maxPreviewSwapNs,
     )
 
     fun resetPerformanceStats() {
@@ -334,6 +367,10 @@ internal class CameraGlRenderer(
         estimatedSourceDrops.set(0L)
         encoderFrames.set(0L)
         encoderBackpressureEvents.set(0L)
+        previewFrames.set(0L)
+        previewBackpressureEvents.set(0L)
+        maxEncoderSwapNs = 0L
+        maxPreviewSwapNs = 0L
         lastSourceTimestampNs = Long.MIN_VALUE
     }
 
@@ -498,6 +535,7 @@ internal class CameraGlRenderer(
                             swapStartedNs
 
                 encoderFrames.incrementAndGet()
+                if (swapDurationNs > maxEncoderSwapNs) maxEncoderSwapNs = swapDurationNs
 
                 if (
                     swapDurationNs >
@@ -508,16 +546,14 @@ internal class CameraGlRenderer(
                 }
             }
 
-            // The black frame is published when visibility changes (or the Surface is attached).
-            // Re-publishing that same frame for every camera frame wastes GPU and compositor work.
+            // Keep preview work out of the camera-frame callback. A single pending task draws
+            // the newest texture, so a busy TextureView cannot queue one preview draw per
+            // encoded frame and delay the next camera/encoder frame indefinitely.
             if (previewEglSurface != EGL14.EGL_NO_SURFACE && previewContentVisible) {
-                renderTo(
-                    target = previewEglSurface,
-                    width = previewWidth,
-                    height = previewHeight,
-                    circleMask = true,
-                )
-                swapPreviewBuffers()
+                if (!previewRenderPending) {
+                    previewRenderPending = true
+                    handler.post(renderPreviewTask)
+                }
             }
         }.onFailure { error ->
             Log.e(
@@ -949,6 +985,7 @@ internal class CameraGlRenderer(
         cameraSurfaceTexture?.release()
         cameraSurfaceTexture = null
         hasCameraFrame = false
+        previewRenderPending = false
 
         if (oesTextureId != 0) {
             GLES20.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
