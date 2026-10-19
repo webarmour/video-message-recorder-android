@@ -93,14 +93,24 @@ internal class PresentationTimestampGate {
  * remain geometry operations.
  */
 internal data class RendererPerformanceStats(
+    val threadPriority: Int,
+    val inputFrames: Long,
+    val sourceAcquireOverBudgetEvents: Long,
     val sourceFrames: Long,
     val estimatedSourceDrops: Long,
     val encoderFrames: Long,
     val encoderBackpressureEvents: Long,
     val previewFrames: Long,
+    val previewFramesCoalesced: Long,
     val previewBackpressureEvents: Long,
+    val encoderDrawOverBudgetEvents: Long,
+    val previewDrawOverBudgetEvents: Long,
     val maxEncoderSwapNs: Long,
     val maxPreviewSwapNs: Long,
+    val maxSourceAcquireNs: Long,
+    val maxEncoderDrawNs: Long,
+    val maxPreviewDrawNs: Long,
+    val maxEglMakeCurrentNs: Long,
 )
 
 internal class CameraGlRenderer(
@@ -117,6 +127,7 @@ internal class CameraGlRenderer(
     private var eglContext = EGL14.EGL_NO_CONTEXT
     private var eglConfig: EGLConfig? = null
     private var pbufferSurface = EGL14.EGL_NO_SURFACE
+    private var currentEglSurface = EGL14.EGL_NO_SURFACE
 
     private var previewEglSurface = EGL14.EGL_NO_SURFACE
     private var previewSurface: Surface? = null
@@ -139,13 +150,22 @@ internal class CameraGlRenderer(
         Long.MIN_VALUE
 
     private val sourceFrames = AtomicLong(0L)
+    private val inputFrames = AtomicLong(0L)
+    private val sourceAcquireOverBudgetEvents = AtomicLong(0L)
     private val estimatedSourceDrops = AtomicLong(0L)
     private val encoderFrames = AtomicLong(0L)
     private val encoderBackpressureEvents = AtomicLong(0L)
     private val previewFrames = AtomicLong(0L)
+    private val previewFramesCoalesced = AtomicLong(0L)
     private val previewBackpressureEvents = AtomicLong(0L)
+    private val encoderDrawOverBudgetEvents = AtomicLong(0L)
+    private val previewDrawOverBudgetEvents = AtomicLong(0L)
     @Volatile private var maxEncoderSwapNs = 0L
     @Volatile private var maxPreviewSwapNs = 0L
+    @Volatile private var maxSourceAcquireNs = 0L
+    @Volatile private var maxEncoderDrawNs = 0L
+    @Volatile private var maxPreviewDrawNs = 0L
+    @Volatile private var maxEglMakeCurrentNs = 0L
 
     private var cameraSurfaceTexture: SurfaceTexture? = null
     private var cameraInputSurface: Surface? = null
@@ -174,7 +194,13 @@ internal class CameraGlRenderer(
         ) return@Runnable
 
         runCatching {
+            val drawStartedNs = System.nanoTime()
             renderTo(previewEglSurface, previewWidth, previewHeight, circleMask = true)
+            val drawDurationNs = System.nanoTime() - drawStartedNs
+            maxPreviewDrawNs = max(maxPreviewDrawNs, drawDurationNs)
+            if (drawDurationNs > expectedFrameIntervalNs) {
+                previewDrawOverBudgetEvents.incrementAndGet()
+            }
             val swapStartedNs = System.nanoTime()
             val swapped = swapPreviewBuffers()
             val swapDurationNs = System.nanoTime() - swapStartedNs
@@ -352,14 +378,25 @@ internal class CameraGlRenderer(
     }
 
     fun performanceStats(): RendererPerformanceStats = RendererPerformanceStats(
+        threadPriority = runCatching { Process.getThreadPriority(thread.threadId) }
+            .getOrDefault(Int.MIN_VALUE),
+        inputFrames = inputFrames.get(),
+        sourceAcquireOverBudgetEvents = sourceAcquireOverBudgetEvents.get(),
         sourceFrames = sourceFrames.get(),
         estimatedSourceDrops = estimatedSourceDrops.get(),
         encoderFrames = encoderFrames.get(),
         encoderBackpressureEvents = encoderBackpressureEvents.get(),
         previewFrames = previewFrames.get(),
+        previewFramesCoalesced = previewFramesCoalesced.get(),
         previewBackpressureEvents = previewBackpressureEvents.get(),
+        encoderDrawOverBudgetEvents = encoderDrawOverBudgetEvents.get(),
+        previewDrawOverBudgetEvents = previewDrawOverBudgetEvents.get(),
         maxEncoderSwapNs = maxEncoderSwapNs,
         maxPreviewSwapNs = maxPreviewSwapNs,
+        maxSourceAcquireNs = maxSourceAcquireNs,
+        maxEncoderDrawNs = maxEncoderDrawNs,
+        maxPreviewDrawNs = maxPreviewDrawNs,
+        maxEglMakeCurrentNs = maxEglMakeCurrentNs,
     )
 
     fun resetPerformanceStats() {
@@ -369,14 +406,23 @@ internal class CameraGlRenderer(
     }
 
     private fun resetPerformanceStatsLocked() {
+        inputFrames.set(0L)
+        sourceAcquireOverBudgetEvents.set(0L)
         sourceFrames.set(0L)
         estimatedSourceDrops.set(0L)
         encoderFrames.set(0L)
         encoderBackpressureEvents.set(0L)
         previewFrames.set(0L)
+        previewFramesCoalesced.set(0L)
         previewBackpressureEvents.set(0L)
+        encoderDrawOverBudgetEvents.set(0L)
+        previewDrawOverBudgetEvents.set(0L)
         maxEncoderSwapNs = 0L
         maxPreviewSwapNs = 0L
+        maxSourceAcquireNs = 0L
+        maxEncoderDrawNs = 0L
+        maxPreviewDrawNs = 0L
+        maxEglMakeCurrentNs = 0L
         lastSourceTimestampNs = Long.MIN_VALUE
     }
 
@@ -408,13 +454,18 @@ internal class CameraGlRenderer(
             cameraSurfaceTexture
                 ?: return
 
-        makeCurrent(
-            pbufferSurface
-        )
+        if (currentEglSurface == EGL14.EGL_NO_SURFACE) makeCurrent(pbufferSurface)
 
         runCatching {
+            val acquireStartedNs = System.nanoTime()
             surfaceTexture.updateTexImage()
+            val acquireDurationNs = System.nanoTime() - acquireStartedNs
             surfaceTexture.getTransformMatrix(stMatrix)
+            inputFrames.incrementAndGet()
+            maxSourceAcquireNs = max(maxSourceAcquireNs, acquireDurationNs)
+            if (acquireDurationNs > expectedFrameIntervalNs) {
+                sourceAcquireOverBudgetEvents.incrementAndGet()
+            }
             hasCameraFrame = true
 
             // Keep the inactive camera's buffer queue moving during prewarm. Its transform and
@@ -483,6 +534,7 @@ internal class CameraGlRenderer(
                 encoderEglSurface !=
                 EGL14.EGL_NO_SURFACE
             ) {
+                val drawStartedNs = System.nanoTime()
                 renderTo(
                     target =
                         encoderEglSurface,
@@ -493,6 +545,11 @@ internal class CameraGlRenderer(
                     circleMask =
                         encoderCircleMask,
                 )
+                val drawDurationNs = System.nanoTime() - drawStartedNs
+                maxEncoderDrawNs = max(maxEncoderDrawNs, drawDurationNs)
+                if (drawDurationNs > expectedFrameIntervalNs) {
+                    encoderDrawOverBudgetEvents.incrementAndGet()
+                }
 
                 /*
                  * IMPORTANT:
@@ -559,6 +616,8 @@ internal class CameraGlRenderer(
                 if (!previewRenderPending) {
                     previewRenderPending = true
                     handler.post(renderPreviewTask)
+                } else {
+                    previewFramesCoalesced.incrementAndGet()
                 }
             }
         }.onFailure { error ->
@@ -702,10 +761,12 @@ internal class CameraGlRenderer(
         height: Int,
         circleMask: Boolean,
     ) {
+        val makeCurrentStartedNs = System.nanoTime()
         makeCurrent(target)
+        maxEglMakeCurrentNs = max(maxEglMakeCurrentNs, System.nanoTime() - makeCurrentStartedNs)
         GLES20.glViewport(0, 0, width, height)
-        GLES20.glClearColor(0f, 0f, 0f, 1f)
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        // The quad covers the full viewport, and the fragment shader paints the mask outside
+        // the circle. Clearing each output first adds a full-surface GPU pass per frame.
 
         GLES20.glUseProgram(program)
 
@@ -959,14 +1020,17 @@ internal class CameraGlRenderer(
     }
 
     private fun makeCurrent(surface: EGLSurface) {
+        if (currentEglSurface == surface) return
         check(EGL14.eglMakeCurrent(eglDisplay, surface, surface, eglContext)) {
             "eglMakeCurrent failed: 0x${EGL14.eglGetError().toString(16)}"
         }
+        currentEglSurface = surface
     }
 
     private fun destroyEglSurface(surface: EGLSurface) {
         if (eglDisplay != EGL14.EGL_NO_DISPLAY && surface != EGL14.EGL_NO_SURFACE) {
             EGL14.eglDestroySurface(eglDisplay, surface)
+            if (currentEglSurface == surface) currentEglSurface = EGL14.EGL_NO_SURFACE
         }
     }
 
@@ -1018,6 +1082,7 @@ internal class CameraGlRenderer(
         EGL14.eglReleaseThread()
         EGL14.eglTerminate(eglDisplay)
         eglDisplay = EGL14.EGL_NO_DISPLAY
+        currentEglSurface = EGL14.EGL_NO_SURFACE
     }
 
     override fun close() {
