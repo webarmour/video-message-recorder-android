@@ -34,6 +34,7 @@ internal class RecordingMuxer(
 
     private var started = false
     private var closed = false
+    private var pendingBytes = 0L
 
     @Synchronized
     fun setTrackFormat(track: Track, format: MediaFormat) {
@@ -63,6 +64,9 @@ internal class RecordingMuxer(
         val normalizedPtsUs = max(0L, info.presentationTimeUs - originUs)
 
         if (!started) {
+            check(pendingBytes + info.size <= MAX_PENDING_BYTES) {
+                "Muxer tracks did not become ready before pending samples reached $MAX_PENDING_BYTES bytes"
+            }
             val duplicate = buffer.duplicate().apply {
                 position(info.offset)
                 limit(info.offset + info.size)
@@ -76,6 +80,7 @@ internal class RecordingMuxer(
                     flags = info.flags,
                 )
             )
+            pendingBytes += info.size
             return
         }
 
@@ -93,6 +98,7 @@ internal class RecordingMuxer(
                 set(0, sample.data.size, sample.presentationTimeUs, sample.flags)
             }
             muxer.writeSampleData(trackIndex, buffer, info)
+            pendingBytes -= sample.data.size
         }
     }
 
@@ -129,5 +135,10 @@ internal class RecordingMuxer(
         runCatching { muxer.release() }
 
         pending.values.forEach { it.clear() }
+        pendingBytes = 0L
+    }
+
+    private companion object {
+        const val MAX_PENDING_BYTES = 16L * 1024L * 1024L
     }
 }

@@ -4,6 +4,8 @@ import android.content.Context
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
+import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.os.Build
 import android.util.Log
 
@@ -57,6 +59,11 @@ internal class AutoRecordingConfigResolver(
             return fallbackConfig()
         }
 
+        // Codec enumeration is relatively expensive on some devices. AUTO probes the same
+        // resolution/FPS pair more than once when it tries fixed and variable FPS policies.
+        val codecInfos = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+        val encoderSupportCache = HashMap<Pair<VideoQuality, Int>, Boolean>()
+
         AUTO_QUALITY_ORDER.forEach { quality ->
 
             /*
@@ -68,6 +75,8 @@ internal class AutoRecordingConfigResolver(
                 quality = quality,
                 frameRate = 60,
                 holdFps = true,
+                codecInfos = codecInfos,
+                encoderSupportCache = encoderSupportCache,
             )?.let {
                 return it
             }
@@ -84,6 +93,8 @@ internal class AutoRecordingConfigResolver(
                 quality = quality,
                 frameRate = 30,
                 holdFps = true,
+                codecInfos = codecInfos,
+                encoderSupportCache = encoderSupportCache,
             )?.let {
                 return it
             }
@@ -99,6 +110,8 @@ internal class AutoRecordingConfigResolver(
                 quality = quality,
                 frameRate = 30,
                 holdFps = false,
+                codecInfos = codecInfos,
+                encoderSupportCache = encoderSupportCache,
             )?.let {
                 return it
             }
@@ -112,15 +125,20 @@ internal class AutoRecordingConfigResolver(
         quality: VideoQuality,
         frameRate: Int,
         holdFps: Boolean,
+        codecInfos: Array<MediaCodecInfo>,
+        encoderSupportCache: MutableMap<Pair<VideoQuality, Int>, Boolean>,
     ): RecordingConfig? {
         val outputSize =
             quality.outputSize
 
         if (
-            !avcEncoderSupports(
-                size = outputSize,
-                frameRate = frameRate,
-            )
+            !encoderSupportCache.getOrPut(quality to frameRate) {
+                avcEncoderSupports(
+                    size = outputSize,
+                    frameRate = frameRate,
+                    codecInfos = codecInfos,
+                )
+            }
         ) {
             return null
         }

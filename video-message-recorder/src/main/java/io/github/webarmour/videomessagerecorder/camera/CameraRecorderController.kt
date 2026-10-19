@@ -1868,12 +1868,24 @@ internal class CameraRecorderController(
                     VideoEncoder(
                         config = recordingConfig,
                         muxer = recordingMuxer,
+                        onFailure = { error ->
+                            Log.e(TAG, "Stopping recording after video encoder failure", error)
+                            mainHandler.post {
+                                if (!closed.get()) stopRecording()
+                            }
+                        },
                     )
 
                 val audio =
                     AudioEncoder(
                         config = recordingConfig,
                         muxer = recordingMuxer,
+                        onFailure = { error ->
+                            Log.e(TAG, "Stopping recording after audio encoder failure", error)
+                            mainHandler.post {
+                                if (!closed.get()) stopRecording()
+                            }
+                        },
                     )
 
                 tempFile = file

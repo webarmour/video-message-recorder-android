@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class VideoEncoder(
     private val config: RecordingConfig,
     private val muxer: RecordingMuxer,
+    private val onFailure: (Throwable) -> Unit = {},
 ) : AutoCloseable {
 
     private data class CodecSelection(
@@ -41,6 +42,9 @@ internal class VideoEncoder(
 
     @Volatile
     private var actualOutputFormat: String? = null
+
+    @Volatile
+    private var drainFailure: Throwable? = null
 
     init {
         val selection = selectCodec(config.outputSize)
@@ -109,13 +113,20 @@ internal class VideoEncoder(
 
         inputSurface = codec.createInputSurface()
         codec.start()
-        drainThread = Thread(::drainLoop, "VideoEncoderDrain").apply { start() }
+        drainThread = Thread({
+            runCatching { drainLoop() }.onFailure { error ->
+                drainFailure = error
+                Log.e(TAG, "Video encoder drain failed", error)
+                runCatching { onFailure(error) }
+            }
+        }, "VideoEncoderDrain").apply { start() }
     }
 
     fun stopAndAwait() {
         if (!draining.compareAndSet(true, false)) return
         codec.signalEndOfInputStream()
         drainThread.join(DRAIN_TIMEOUT_MS)
+        drainFailure?.let { throw IllegalStateException("Video encoder drain failed", it) }
         check(!drainThread.isAlive) { "Video encoder did not emit EOS in time" }
     }
 

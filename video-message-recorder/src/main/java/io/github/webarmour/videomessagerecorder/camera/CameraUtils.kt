@@ -2,6 +2,7 @@ package io.github.webarmour.videomessagerecorder.camera
 
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
+import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.util.Range
@@ -128,7 +129,8 @@ internal fun cameraCanFeedSquareOutput(
 internal fun avcEncoderSupports(
     size: Size,
     frameRate: Int,
-): Boolean = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+    codecInfos: Array<MediaCodecInfo> = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos,
+): Boolean = codecInfos.any { info ->
     if (!info.isEncoder || info.supportedTypes.none {
             it.equals(
                 MediaFormat.MIMETYPE_VIDEO_AVC,
