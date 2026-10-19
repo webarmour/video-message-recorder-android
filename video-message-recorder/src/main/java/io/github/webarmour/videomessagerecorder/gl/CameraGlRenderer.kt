@@ -119,6 +119,7 @@ internal class CameraGlRenderer(
     private var previewWidth = 1
     private var previewHeight = 1
     private var previewContentVisible = true
+    private var hasCameraFrame = false
 
     private var encoderEglSurface = EGL14.EGL_NO_SURFACE
     private var encoderSurface: Surface? = null
@@ -253,6 +254,11 @@ internal class CameraGlRenderer(
                 )
 
                 swapPreviewBuffers()
+            } else if (hasCameraFrame) {
+                // A prewarmed camera already has a texture. Publish it immediately instead of
+                // waiting for its next frame after the switch.
+                renderTo(previewEglSurface, previewWidth, previewHeight, circleMask = true)
+                swapPreviewBuffers()
             }
         }
     }
@@ -365,6 +371,8 @@ internal class CameraGlRenderer(
 
         runCatching {
             surfaceTexture.updateTexImage()
+            surfaceTexture.getTransformMatrix(stMatrix)
+            hasCameraFrame = true
 
             // Keep the inactive camera's buffer queue moving during prewarm. Its transform and
             // timestamp are only needed once this renderer has a visible or encoded output.
@@ -374,10 +382,6 @@ internal class CameraGlRenderer(
                 lastSourceTimestampNs = Long.MIN_VALUE
                 return@runCatching
             }
-
-            surfaceTexture.getTransformMatrix(
-                stMatrix
-            )
 
             val cameraTimestampNs =
                 surfaceTexture.timestamp
@@ -553,13 +557,6 @@ internal class CameraGlRenderer(
 
             encoderMonotonicTimestampBaseNs =
                 System.nanoTime()
-
-            Log.i(
-                TAG,
-                "Encoder timestamp anchor: " +
-                        "cameraNs=$cameraTimestampNs, " +
-                        "monotonicNs=$encoderMonotonicTimestampBaseNs",
-            )
 
             return encoderMonotonicTimestampBaseNs
         }
@@ -951,6 +948,7 @@ internal class CameraGlRenderer(
         cameraInputSurface = null
         cameraSurfaceTexture?.release()
         cameraSurfaceTexture = null
+        hasCameraFrame = false
 
         if (oesTextureId != 0) {
             GLES20.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
@@ -996,7 +994,7 @@ internal class CameraGlRenderer(
     }
 
     private companion object {
-        const val TAG = "CameraGlRenderer"
+        const val TAG = "CameraPipelineLab"
         const val EGL_RECORDABLE_ANDROID = 0x3142
 
         val DEFAULT_VERTICES = floatArrayOf(

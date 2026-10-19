@@ -29,7 +29,8 @@ internal fun CaptureRequest.Builder.setZoomRatioCompat(
     requestedZoomRatio: Float,
 ) {
     val range = characteristics.zoomRatioRangeCompat()
-    val zoomRatio = requestedZoomRatio.coerceIn(range.lower, range.upper)
+    val zoomRatio = (requestedZoomRatio.takeIf { it.isFinite() } ?: 1f)
+        .coerceIn(range.lower, range.upper)
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         set(CaptureRequest.CONTROL_ZOOM_RATIO, zoomRatio)

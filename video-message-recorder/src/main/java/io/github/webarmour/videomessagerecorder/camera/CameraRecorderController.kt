@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
@@ -21,7 +22,6 @@ import android.util.Log
 import android.util.Range
 import android.util.Size
 import android.view.Surface
-import androidx.core.content.ContextCompat
 import io.github.webarmour.videomessagerecorder.gl.CameraGlRenderer
 import io.github.webarmour.videomessagerecorder.gl.PresentationTimestampGate
 import io.github.webarmour.videomessagerecorder.media.AudioEncoder
@@ -66,9 +66,26 @@ internal class CameraRecorderController(
         val renderer: CameraGlRenderer,
         val inputSurface: Surface,
     ) {
+        val cameraZoomRange = profile.characteristics.zoomRatioRangeCompat()
+        val concurrentZoomRange = Range(
+            1f,
+            minOf(
+                cameraZoomRange.upper,
+                profile.characteristics
+                    .get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
+                    ?.takeIf { it.isFinite() && it >= 1f }
+                    ?: 1f,
+            ).coerceAtLeast(1f),
+        )
         var device: CameraDevice? = null
         var session: CameraCaptureSession? = null
+        var repeatingRequestBuilder: CaptureRequest.Builder? = null
+        var repeatingCaptureCallback: CameraCaptureSession.CaptureCallback? = null
+        var lastSubmittedZoomRatio = Float.NaN
+        @Volatile var lastZoomRequestNs = 0L
+        @Volatile var zoomRatio: Float = profile.zoomRatio
         var opening = false
+        var openGeneration = 0L
         var sessionRetryWithoutUseCase = false
 
         var selectedFpsRange: Range<Int>? = null
@@ -98,6 +115,10 @@ internal class CameraRecorderController(
     private val recordingExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val requestScheduler = Executors.newSingleThreadScheduledExecutor()
     private val requestRevision = AtomicLong(0L)
+    private val zoomRequestRevision = AtomicLong(0L)
+    private val zoomUpdateScheduled = AtomicBoolean(false)
+    private val zoomUiUpdatePending = AtomicBoolean(false)
+    private val recoveryGeneration = AtomicLong(0L)
     private val timestampGate = PresentationTimestampGate()
     private val telemetry = CaptureTelemetry()
     private val cameraCallbackExecutor = Executor { task ->
@@ -127,12 +148,15 @@ internal class CameraRecorderController(
     private val pipelines = linkedMapOf<CameraRole, CameraPipeline>()
     private var activeRole = CameraRole.FRONT
     private var pendingActivationRole: CameraRole? = null
-    private var concurrentCameraPrewarm = false
+    @Volatile private var concurrentCameraPrewarm = false
+    private var concurrentVideoRecordUseCase = true
+    private var concurrentPrewarmFps = CONCURRENT_PREWARM_MAX_FPS
+    @Volatile private var cameraRecoveryPending = false
+    @Volatile private var recoveryAttemptCount = 0
     private var cameraSystemPrepared = false
     private var cameraSwitchCount = 0
     private var lastCameraSwitchPromotionMs = 0L
     private var cameraSwitchPromotionTimeoutCount = 0
-    private var lastZoomUiUpdateNs = 0L
 
     private var previewSurface: Surface? = null
     private var previewWidth = 1
@@ -149,6 +173,7 @@ internal class CameraRecorderController(
     private var recording = false
 
     private val recordingTransition = AtomicBoolean(false)
+    private val switchRequestPending = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
 
     private var muxer: RecordingMuxer? = null
@@ -171,6 +196,13 @@ internal class CameraRecorderController(
 
     fun onStop() {
         lifecycleActive = false
+        recoveryGeneration.incrementAndGet()
+        cameraRecoveryPending = false
+        recoveryAttemptCount = 0
+        requestRevision.incrementAndGet()
+        zoomRequestRevision.incrementAndGet()
+        switchRequestPending.set(false)
+        updateState { state -> state.copy(isSwitchingCamera = false) }
         if (recording) stopRecording()
         closeAllCameraDevices()
     }
@@ -214,16 +246,21 @@ internal class CameraRecorderController(
     }
 
     fun switchCamera() {
-        if (closed.get() || currentUiState.isSwitchingCamera) return
+        if (closed.get() || !lifecycleActive || cameraRecoveryPending || recoveryAttemptCount != 0 ||
+            currentUiState.isSwitchingCamera) return
 
         val targetRole = when (activeRole) {
             CameraRole.FRONT -> CameraRole.REAR_WIDE
             CameraRole.REAR_WIDE -> CameraRole.FRONT
         }
         val target = pipelines[targetRole] ?: return
+        if (!switchRequestPending.compareAndSet(false, true)) return
+        zoomRequestRevision.incrementAndGet()
+        config = config.copy(zoomRatio = 1f)
 
         updateState { state ->
             state.copy(
+                config = config,
                 isSwitchingCamera = true,
                 status = appContext.getString(
                     if (concurrentCameraPrewarm) {
@@ -236,49 +273,78 @@ internal class CameraRecorderController(
             )
         }
 
-        cameraExecutor.execute {
-            pendingActivationRole = targetRole
-
-            if (target.session != null && target.warmed) {
-                val needsHighFpsPromotion =
-                    concurrentCameraPrewarm && config.frameRate > CONCURRENT_PREWARM_MAX_FPS
-
-                if (needsHighFpsPromotion) {
-                    // The inactive camera is intentionally prewarmed at <=30 fps to avoid running
-                    // two full 60 fps ISP pipelines continuously. Do not expose the 30 -> 60
-                    // transition to preview/encoder: keep rendering the old camera until Capture2
-                    // confirms that the target has reached the requested cadence.
-                    target.switchPromotionStartedNs = System.nanoTime()
-                    target.switchPromotionStableFrames = 0
-                    submitRepeatingRequest(
-                        pipeline = target,
-                        resetWarmup = false,
-                        publishUiStatus = false,
-                    )
-                } else {
-                    activatePipeline(target)
+        try {
+            cameraExecutor.execute {
+                if (closed.get() || !lifecycleActive) {
+                    switchRequestPending.set(false)
+                    return@execute
                 }
-                return@execute
-            }
 
-            if (!concurrentCameraPrewarm) {
-                // Keep the old renderer attached to preview/encoder while the camera is closed.
-                // Its last frame remains visible and audio keeps running until the new camera is warm.
-                activePipeline()?.let(::closePipelineCamera)
-            }
+                // A camera's previous pinch zoom must not become its next starting zoom.
+                // Reset the outgoing request before showing the already warm target.
+                activePipeline()?.let { outgoing ->
+                    outgoing.zoomRatio = 1f
+                    if (concurrentCameraPrewarm && outgoing.session != null) {
+                        submitZoomRequest(outgoing)
+                    }
+                }
+                target.zoomRatio = 1f
+                if (target.session != null && target.lastSubmittedZoomRatio != 1f) {
+                    submitZoomRequest(target)
+                }
+                if (cameraRecoveryPending) {
+                    switchRequestPending.set(false)
+                    return@execute
+                }
+                pendingActivationRole = targetRole
 
-            if (target.device == null && !target.opening) {
-                openPipeline(target)
+                if (target.session != null && target.warmed) {
+                    val needsHighFpsPromotion =
+                        concurrentCameraPrewarm && config.frameRate > concurrentPrewarmFps
+
+                    if (needsHighFpsPromotion) {
+                        // The inactive camera is prewarmed below the requested recording rate.
+                        // Do not expose that rate promotion
+                        // transition to preview/encoder: keep rendering the old camera until Capture2
+                        // confirms that the target has reached the requested cadence.
+                        target.switchPromotionStartedNs = System.nanoTime()
+                        target.switchPromotionStableFrames = 0
+                        submitRepeatingRequest(
+                            pipeline = target,
+                            resetWarmup = false,
+                            publishUiStatus = false,
+                        )
+                    } else {
+                        activatePipeline(target)
+                    }
+                    return@execute
+                }
+
+                if (!concurrentCameraPrewarm) {
+                    // Keep the old renderer attached to preview/encoder while the camera is closed.
+                    // Its last frame remains visible and audio keeps running until the new camera is warm.
+                    activePipeline()?.let(::closePipelineCamera)
+                }
+
+                if (target.device == null && !target.opening) {
+                    openPipeline(target)
+                }
+                // If a concurrent session already exists but is still finishing its one-time initial
+                // warmup, onCaptureResult() will activate it as soon as 3A converges. No request restart.
             }
-            // If a concurrent session already exists but is still finishing its one-time initial
-            // warmup, onCaptureResult() will activate it as soon as 3A converges. No request restart.
+        } catch (_: RejectedExecutionException) {
+            switchRequestPending.set(false)
+            if (!closed.get()) {
+                updateState { state -> state.copy(isSwitchingCamera = false) }
+            }
         }
     }
 
     fun updateConfig(newConfig: RecordingConfig) {
         if (recording || recordingTransition.get()) return
 
-        val activeCapabilities = activePipeline()?.profile?.characteristics
+        val active = activePipeline()
+        val activeCapabilities = active?.profile?.characteristics
         val aeCompRange =
             activeCapabilities?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
         val sensitivityRange =
@@ -288,7 +354,7 @@ internal class CameraRecorderController(
         val minFocusDistance = activeCapabilities
             ?.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE)
             ?: 0f
-        val zoomRange = activeCapabilities?.zoomRatioRangeCompat()
+        val zoomRange = active?.let(::availableZoomRange)
         val availableApertures = activeCapabilities
             ?.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)
             ?: floatArrayOf()
@@ -316,7 +382,10 @@ internal class CameraRecorderController(
             } ?: newConfig.manualExposureTimeUs,
             manualFocusDistance = newConfig.manualFocusDistance.coerceIn(0f, minFocusDistance),
             zoomRatio = zoomRange?.let {
-                newConfig.zoomRatio.coerceIn(it.lower, it.upper)
+                (newConfig.zoomRatio.takeIf { zoom -> zoom.isFinite() }
+                    ?: config.zoomRatio.takeIf { zoom -> zoom.isFinite() }
+                    ?: 1f)
+                    .coerceIn(it.lower, it.upper)
             } ?: 1f,
             colorTemperatureKelvin = colorTemperatureRange?.let {
                 newConfig.colorTemperatureKelvin.coerceIn(it.lower, it.upper)
@@ -388,6 +457,7 @@ internal class CameraRecorderController(
             normalized.hidePreviewUntilRecording != config.hidePreviewUntilRecording
 
         config = normalized
+        activePipeline()?.zoomRatio = normalized.zoomRatio
 
         // Keep UI state stable for CaptureRequest-only changes. Rebuilding the source is the only
         // configuration operation that temporarily marks the camera busy. This avoids the visible
@@ -402,6 +472,7 @@ internal class CameraRecorderController(
 
         if (sourcePipelineChanged && cameraSystemPrepared) {
             requestRevision.incrementAndGet()
+            zoomRequestRevision.incrementAndGet()
             cameraExecutor.execute(::rebuildCameraSystem)
             return
         }
@@ -416,26 +487,71 @@ internal class CameraRecorderController(
     }
 
     fun updateZoomRatio(requestedZoomRatio: Float) {
-        if (closed.get() || recordingTransition.get()) return
+        if (closed.get() || cameraRecoveryPending || recoveryAttemptCount != 0 ||
+            switchRequestPending.get() || recordingTransition.get() ||
+            !requestedZoomRatio.isFinite()
+        ) return
 
-        val range = activePipeline()
-            ?.profile
-            ?.characteristics
-            ?.zoomRatioRangeCompat()
-            ?: return
+        val pipeline = activePipeline() ?: return
+        val range = availableZoomRange(pipeline)
 
         val normalizedZoom = requestedZoomRatio.coerceIn(range.lower, range.upper)
-        if (abs(normalizedZoom - config.zoomRatio) < 0.001f) return
+        if (normalizedZoom == config.zoomRatio) return
 
         config = config.copy(zoomRatio = normalizedZoom)
-        val nowNs = System.nanoTime()
-        if (nowNs - lastZoomUiUpdateNs >= ZOOM_UI_INTERVAL_NS) {
-            lastZoomUiUpdateNs = nowNs
-            updateState { state -> state.copy(config = config) }
-        }
+        pipeline.zoomRatio = normalizedZoom
+        zoomRequestRevision.incrementAndGet()
+        publishZoomUiState()
 
         if (cameraSystemPrepared) {
-            scheduleRepeatingRequestUpdate()
+            scheduleZoomRequestUpdate()
+        }
+    }
+
+    private fun scheduleZoomRequestUpdate() {
+        if (!zoomUpdateScheduled.compareAndSet(false, true)) return
+
+        try {
+            val frameIntervalNs = 1_000_000_000L / config.frameRate.coerceAtLeast(1)
+            val lastRequestNs = activePipeline()?.lastZoomRequestNs ?: 0L
+            val delayNs = (frameIntervalNs - (System.nanoTime() - lastRequestNs))
+                .coerceAtLeast(0L)
+            requestScheduler.schedule({
+                try {
+                    cameraExecutor.execute {
+                        val revision = zoomRequestRevision.get()
+                        try {
+                            if (closed.get() || cameraRecoveryPending || recoveryAttemptCount != 0 ||
+                                switchRequestPending.get() || !cameraSystemPrepared
+                            ) return@execute
+
+                            val pipeline = activePipeline() ?: return@execute
+                            if (pipeline.device != null && pipeline.session != null) {
+                                submitZoomRequest(pipeline)
+                            }
+                        } finally {
+                            zoomUpdateScheduled.set(false)
+                            // Keep the newest gesture position without flooding Camera2 at 120 Hz.
+                            if (zoomRequestRevision.get() != revision &&
+                                !closed.get() && !switchRequestPending.get()
+                            ) scheduleZoomRequestUpdate()
+                        }
+                    }
+                } catch (_: RejectedExecutionException) {
+                    zoomUpdateScheduled.set(false)
+                }
+            }, delayNs, TimeUnit.NANOSECONDS)
+        } catch (_: RejectedExecutionException) {
+            zoomUpdateScheduled.set(false)
+        }
+    }
+
+    private fun publishZoomUiState() {
+        if (!zoomUiUpdatePending.compareAndSet(false, true)) return
+        updateState { state ->
+            zoomUiUpdatePending.set(false)
+            val latestConfig = config
+            if (state.config == latestConfig) state else state.copy(config = latestConfig)
         }
     }
 
@@ -444,26 +560,34 @@ internal class CameraRecorderController(
 
         requestScheduler.schedule(
             {
-                if (closed.get() || revision != requestRevision.get() || !cameraSystemPrepared) {
+                if (closed.get() || cameraRecoveryPending || recoveryAttemptCount != 0 ||
+                    revision != requestRevision.get() || !cameraSystemPrepared
+                ) {
                     return@schedule
                 }
 
                 if (!cameraExecutor.isShutdown) {
-                    cameraExecutor.execute {
-                        if (closed.get() || revision != requestRevision.get()) return@execute
+                    try {
+                        cameraExecutor.execute {
+                            if (closed.get() || cameraRecoveryPending || recoveryAttemptCount != 0 ||
+                                revision != requestRevision.get()
+                            ) return@execute
 
-                        pipelines.values.forEach { pipeline ->
-                            if (pipeline.session != null) {
-                                submitRepeatingRequest(
-                                    pipeline = pipeline,
-                                    resetWarmup = false,
-                                    publishUiStatus = false,
-                                )
+                            pipelines.values.forEach { pipeline ->
+                                if (pipeline.device != null && pipeline.session != null) {
+                                    submitRepeatingRequest(
+                                        pipeline = pipeline,
+                                        resetWarmup = false,
+                                        publishUiStatus = false,
+                                    )
+                                }
+                            }
+                            updateState { state ->
+                                if (state.config == config) state else state.copy(config = config)
                             }
                         }
-                        updateState { state ->
-                            if (state.config == config) state else state.copy(config = config)
-                        }
+                    } catch (_: RejectedExecutionException) {
+                        // Shutdown may happen after the scheduler's isShutdown check.
                     }
                 }
             },
@@ -473,9 +597,9 @@ internal class CameraRecorderController(
     }
 
     private fun maybePrepareAndOpenCameras() {
-        if (closed.get() || !permissionGranted || !lifecycleActive || previewSurface == null) return
+        if (closed.get() || cameraRecoveryPending || !permissionGranted || !lifecycleActive || previewSurface == null) return
         if (
-            ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) !=
+            appContext.checkSelfPermission(Manifest.permission.CAMERA) !=
             PackageManager.PERMISSION_GRANTED
         ) return
 
@@ -520,7 +644,9 @@ internal class CameraRecorderController(
                 profile = profile,
                 renderer = renderer,
                 inputSurface = inputSurface,
-            )
+            ).also { pipeline ->
+                if (profile.role == activeRole) pipeline.zoomRatio = config.zoomRatio
+            }
         }
 
         val front = pipelines[CameraRole.FRONT]
@@ -534,26 +660,43 @@ internal class CameraRecorderController(
                 combination.contains(front.profile.cameraId) &&
                         combination.contains(rear.profile.cameraId)
             }
-            val prewarmRateSupported = config.frameRate <= CONCURRENT_PREWARM_MAX_FPS ||
-                    listOf(front, rear).all { pipeline ->
-                        pipeline.profile.characteristics
-                            .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-                            ?.any { range -> range.upper <= CONCURRENT_PREWARM_MAX_FPS } == true
-                    }
-
-            pairAdvertised && prewarmRateSupported
+            if (pairAdvertised) {
+                concurrentVideoRecordUseCase = supportsConcurrentSessions(
+                    front, rear, allowVideoRecordUseCase = true,
+                )
+                concurrentVideoRecordUseCase || supportsConcurrentSessions(
+                    front, rear, allowVideoRecordUseCase = false,
+                )
+            } else {
+                false
+            }
         } else {
             false
         }
 
+        activePipeline()?.let { pipeline ->
+            val range = availableZoomRange(pipeline)
+            val zoom = pipeline.zoomRatio.coerceIn(range.lower, range.upper)
+            pipeline.zoomRatio = zoom
+            config = config.copy(zoomRatio = zoom)
+        }
+
+        concurrentPrewarmFps = if (concurrentCameraPrewarm &&
+            listOfNotNull(front, rear).all { pipeline ->
+                pipeline.profile.characteristics
+                    .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                    ?.any { range ->
+                        range.lower <= config.frameRate && range.upper >= config.frameRate
+                    } == true
+            }
+        ) {
+            config.frameRate
+        } else {
+            minOf(config.frameRate, CONCURRENT_PREWARM_MAX_FPS)
+        }
+
         cameraSystemPrepared = true
         attachPreviewToActiveRenderer()
-
-        Log.i(
-            TAG,
-            "Cameras prepared: ${pipelines.values.joinToString { it.profile.label + "=" + it.profile.cameraId }}; " +
-                    "concurrent=$concurrentCameraPrewarm",
-        )
 
         updateStateForActivePipeline(
             status = if (concurrentCameraPrewarm) {
@@ -570,6 +713,11 @@ internal class CameraRecorderController(
     }
 
     private fun rebuildCameraSystem() {
+        recoveryGeneration.incrementAndGet()
+        cameraRecoveryPending = false
+        recoveryAttemptCount = 0
+        zoomRequestRevision.incrementAndGet()
+        switchRequestPending.set(false)
         pipelines.values.forEach { pipeline ->
             closePipelineCamera(pipeline)
             runCatching { pipeline.renderer.close() }
@@ -577,11 +725,36 @@ internal class CameraRecorderController(
         pipelines.clear()
         pendingActivationRole = null
         concurrentCameraPrewarm = false
+        concurrentVideoRecordUseCase = true
         cameraSystemPrepared = false
         timestampGate.reset()
 
         prepareCameraSystem()
         openRequiredPipelines()
+    }
+
+    private fun supportsConcurrentSessions(
+        front: CameraPipeline,
+        rear: CameraPipeline,
+        allowVideoRecordUseCase: Boolean,
+    ): Boolean {
+        val callback = object : CameraCaptureSession.StateCallback() {
+            override fun onConfigured(session: CameraCaptureSession) = Unit
+            override fun onConfigureFailed(session: CameraCaptureSession) = Unit
+        }
+        val configurations = listOf(front, rear).associate { pipeline ->
+            pipeline.profile.cameraId to SessionConfiguration(
+                SessionConfiguration.SESSION_REGULAR,
+                listOf(createOutputConfiguration(pipeline, allowVideoRecordUseCase)),
+                cameraCallbackExecutor,
+                callback,
+            )
+        }
+        return runCatching {
+            cameraManager.isConcurrentSessionConfigurationSupported(configurations)
+        }.onFailure { error ->
+            Log.w(TAG, "Unable to validate concurrent camera sessions", error)
+        }.getOrDefault(false)
     }
 
     private fun discoverProfiles(): Map<CameraRole, CameraProfile> {
@@ -742,14 +915,14 @@ internal class CameraRecorderController(
             pipeline.device != null ||
             pipeline.opening ||
             closed.get() ||
+            cameraRecoveryPending ||
             !lifecycleActive
         ) {
             return
         }
 
         if (
-            ContextCompat.checkSelfPermission(
-                appContext,
+            appContext.checkSelfPermission(
                 Manifest.permission.CAMERA,
             ) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -759,8 +932,10 @@ internal class CameraRecorderController(
         pipeline.opening = true
         pipeline.warmed = false
         pipeline.stable3AFrames = 0
+        val openGeneration = ++pipeline.openGeneration
 
-        cameraManager.openCamera(
+        try {
+            cameraManager.openCamera(
             pipeline.profile.cameraId,
             cameraCallbackExecutor,
             object : CameraDevice.StateCallback() {
@@ -768,22 +943,33 @@ internal class CameraRecorderController(
                 override fun onOpened(
                     camera: CameraDevice,
                 ) {
+                    if (openGeneration != pipeline.openGeneration) {
+                        camera.close()
+                        return
+                    }
                     if (closed.get() || !lifecycleActive) {
+                        closePipelineCamera(pipeline)
                         camera.close()
                         return
                     }
 
                     pipeline.device = camera
 
-                    if (
-                        deferSessionConfiguration &&
-                        concurrentCameraPrewarm
-                    ) {
-                        maybeConfigureConcurrentSessions()
-                    } else {
-                        createCameraSession(
-                            pipeline = pipeline,
-                            allowVideoRecordUseCase = true,
+                    try {
+                        if (deferSessionConfiguration && concurrentCameraPrewarm) {
+                            maybeConfigureConcurrentSessions()
+                        } else {
+                            createCameraSession(
+                                pipeline = pipeline,
+                                allowVideoRecordUseCase = true,
+                            )
+                        }
+                    } catch (error: Exception) {
+                        Log.e(TAG, "Unable to configure ${pipeline.profile.label} camera", error)
+                        handlePipelineFailure(
+                            pipeline,
+                            "Unable to configure camera: ${error.message}",
+                            cameraError = error is CameraAccessException,
                         )
                     }
                 }
@@ -792,17 +978,19 @@ internal class CameraRecorderController(
                     camera: CameraDevice,
                 ) {
                     camera.close()
+                    if (openGeneration != pipeline.openGeneration) return
 
                     pipeline.device = null
                     pipeline.session = null
                     pipeline.opening = false
 
-                    if (!closed.get()) {
+                    if (!closed.get() && lifecycleActive) {
                         handlePipelineFailure(
                             pipeline,
                             appContext.getString(
                                 R.string.error_camera_disconnected
                             ),
+                            cameraError = true,
                         )
                     }
                 }
@@ -812,23 +1000,34 @@ internal class CameraRecorderController(
                     error: Int,
                 ) {
                     camera.close()
+                    if (openGeneration != pipeline.openGeneration) return
 
                     pipeline.device = null
                     pipeline.session = null
                     pipeline.opening = false
 
-                    if (!closed.get()) {
+                    if (!closed.get() && lifecycleActive) {
                         handlePipelineFailure(
                             pipeline,
                             appContext.getString(
                                 R.string.error_camera_code,
                                 error,
                             ),
+                            cameraError = true,
                         )
                     }
                 }
             },
-        )
+            )
+        } catch (error: Exception) {
+            pipeline.opening = false
+            Log.e(TAG, "Unable to open ${pipeline.profile.label} camera", error)
+            handlePipelineFailure(
+                pipeline,
+                "Unable to open camera: ${error.message}",
+                cameraError = true,
+            )
+        }
     }
 
     private fun maybeConfigureConcurrentSessions() {
@@ -836,9 +1035,8 @@ internal class CameraRecorderController(
         if (pipelines.values.any { it.device == null }) return
         if (pipelines.values.any { it.session != null }) return
 
-        Log.i(TAG, "All concurrent camera devices opened; configuring sessions")
         pipelines.values.forEach { pipeline ->
-            createCameraSession(pipeline, allowVideoRecordUseCase = true)
+            createCameraSession(pipeline, allowVideoRecordUseCase = concurrentVideoRecordUseCase)
         }
     }
 
@@ -848,8 +1046,123 @@ internal class CameraRecorderController(
     ) {
         val camera = pipeline.device ?: return
         val characteristics = pipeline.profile.characteristics
+        val output = createOutputConfiguration(pipeline, allowVideoRecordUseCase)
 
-        val output = OutputConfiguration(pipeline.inputSurface).apply {
+        val sessionConfig = SessionConfiguration(
+            SessionConfiguration.SESSION_REGULAR,
+            listOf(output),
+            cameraCallbackExecutor,
+            object : CameraCaptureSession.StateCallback() {
+
+                override fun onConfigured(
+                    session: CameraCaptureSession,
+                ) {
+                    if (closed.get() || !lifecycleActive || pipeline.device !== camera) {
+                        runCatching {
+                            session.close()
+                        }
+
+                        return
+                    }
+
+                    pipeline.session = session
+                    pipeline.opening = false
+                    pipeline.sessionRetryWithoutUseCase = false
+
+                    submitRepeatingRequest(
+                        pipeline = pipeline,
+                        resetWarmup = true,
+                    )
+                }
+
+                override fun onConfigureFailed(
+                    session: CameraCaptureSession,
+                ) {
+                    runCatching {
+                        session.close()
+                    }
+
+                    if (pipeline.device !== camera) return
+
+                    pipeline.session = null
+
+                    if (closed.get() || !lifecycleActive) {
+                        pipeline.opening = false
+                        return
+                    }
+
+                    if (allowVideoRecordUseCase) {
+                        Log.w(
+                            TAG,
+                            "${pipeline.profile.label}: VIDEO_RECORD session failed, retrying generic stream",
+                        )
+
+                        pipeline.sessionRetryWithoutUseCase = true
+
+                        try {
+                            createCameraSession(
+                                pipeline = pipeline,
+                                allowVideoRecordUseCase = false,
+                            )
+                        } catch (error: Exception) {
+                            Log.e(TAG, "Unable to retry ${pipeline.profile.label} session", error)
+                            handlePipelineFailure(
+                                pipeline,
+                                "Unable to configure camera: ${error.message}",
+                            )
+                        }
+                    } else {
+                        pipeline.opening = false
+
+                        handlePipelineFailure(
+                            pipeline,
+                            appContext.getString(
+                                R.string.error_session_configuration_failed
+                            ),
+                        )
+                    }
+                }
+            },
+        )
+
+        // CONTROL_AE_TARGET_FPS_RANGE is commonly a session parameter. In particular, Android
+        // recommends declaring the 60 fps target while creating the session to avoid a vendor
+        // reconfiguration delay when 60 fps is first requested later.
+        //
+        // Declare the requested rate when creating both sessions. If both cameras advertise it,
+        // the inactive camera can stay warm at the same rate and switching needs no FPS promotion.
+        // Otherwise its repeating request uses concurrentPrewarmFps until it becomes active.
+        runCatching {
+            val fpsSelection = chooseVideoFpsRange(
+                ranges = characteristics.get(
+                    CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES
+                ),
+                targetFps = config.frameRate,
+                holdFpsInLowLight = config.holdFpsInLowLight,
+            )
+            val sessionRequest = camera
+                .createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+                .apply {
+                    addTarget(pipeline.inputSurface)
+                    fpsSelection.range?.let {
+                        set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it)
+                    }
+                }
+                .build()
+            sessionConfig.setSessionParameters(sessionRequest)
+        }.onFailure { error ->
+            Log.w(TAG, "${pipeline.profile.label}: unable to set session FPS parameters", error)
+        }
+
+        camera.createCaptureSession(sessionConfig)
+    }
+
+    private fun createOutputConfiguration(
+        pipeline: CameraPipeline,
+        allowVideoRecordUseCase: Boolean,
+    ): OutputConfiguration {
+        val characteristics = pipeline.profile.characteristics
+        return OutputConfiguration(pipeline.inputSurface).apply {
             pipeline.videoRecordUseCaseEnabled = false
             pipeline.readoutTimestampEnabled = false
 
@@ -881,105 +1194,6 @@ internal class CameraRecorderController(
                 pipeline.readoutTimestampEnabled = true
             }
         }
-
-        val sessionConfig = SessionConfiguration(
-            SessionConfiguration.SESSION_REGULAR,
-            listOf(output),
-            cameraCallbackExecutor,
-            object : CameraCaptureSession.StateCallback() {
-
-                override fun onConfigured(
-                    session: CameraCaptureSession,
-                ) {
-                    if (closed.get() || !lifecycleActive) {
-                        runCatching {
-                            session.close()
-                        }
-
-                        return
-                    }
-
-                    pipeline.session = session
-                    pipeline.opening = false
-                    pipeline.sessionRetryWithoutUseCase = false
-
-                    submitRepeatingRequest(
-                        pipeline = pipeline,
-                        resetWarmup = true,
-                    )
-                }
-
-                override fun onConfigureFailed(
-                    session: CameraCaptureSession,
-                ) {
-                    runCatching {
-                        session.close()
-                    }
-
-                    pipeline.session = null
-
-                    if (closed.get() || !lifecycleActive) {
-                        pipeline.opening = false
-                        return
-                    }
-
-                    if (allowVideoRecordUseCase) {
-                        Log.w(
-                            TAG,
-                            "${pipeline.profile.label}: VIDEO_RECORD session failed, retrying generic stream",
-                        )
-
-                        pipeline.sessionRetryWithoutUseCase = true
-
-                        createCameraSession(
-                            pipeline = pipeline,
-                            allowVideoRecordUseCase = false,
-                        )
-                    } else {
-                        pipeline.opening = false
-
-                        handlePipelineFailure(
-                            pipeline,
-                            appContext.getString(
-                                R.string.error_session_configuration_failed
-                            ),
-                        )
-                    }
-                }
-            },
-        )
-
-        // CONTROL_AE_TARGET_FPS_RANGE is commonly a session parameter. In particular, Android
-        // recommends declaring the 60 fps target while creating the session to avoid a vendor
-        // reconfiguration delay when 60 fps is first requested later.
-        //
-        // For concurrent capture both sessions are therefore CREATED as 60-fps-capable, while the
-        // inactive camera's actual repeating request is still capped to <=30 fps. This keeps the
-        // standby sensor/ISP workload low without forcing a cold 30 -> 60 session-mode transition
-        // at the moment the user switches cameras.
-        runCatching {
-            val fpsSelection = chooseVideoFpsRange(
-                ranges = characteristics.get(
-                    CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES
-                ),
-                targetFps = config.frameRate,
-                holdFpsInLowLight = config.holdFpsInLowLight,
-            )
-            val sessionRequest = camera
-                .createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
-                .apply {
-                    addTarget(pipeline.inputSurface)
-                    fpsSelection.range?.let {
-                        set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it)
-                    }
-                }
-                .build()
-            sessionConfig.setSessionParameters(sessionRequest)
-        }.onFailure { error ->
-            Log.w(TAG, "${pipeline.profile.label}: unable to set session FPS parameters", error)
-        }
-
-        camera.createCaptureSession(sessionConfig)
     }
 
     private fun submitRepeatingRequest(
@@ -1011,7 +1225,7 @@ internal class CameraRecorderController(
                         pipeline.profile.role != activeRole &&
                         pipeline.profile.role != pendingActivationRole
             val requestedPipelineFps = if (isInactiveConcurrentPrewarm) {
-                minOf(config.frameRate, CONCURRENT_PREWARM_MAX_FPS)
+                concurrentPrewarmFps
             } else {
                 config.frameRate
             }
@@ -1084,7 +1298,8 @@ internal class CameraRecorderController(
                 resetWarmup(pipeline)
             }
 
-            val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+            val requestZoomRatio = pipeline.zoomRatio
+            val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                 addTarget(pipeline.inputSurface)
                 set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
                 set(
@@ -1250,14 +1465,9 @@ internal class CameraRecorderController(
                     config.tonemap.camera2Mode,
                 )?.let { set(CaptureRequest.TONEMAP_MODE, it) }
 
-                val requestedZoom = if (pipeline.profile.role == activeRole) {
-                    config.zoomRatio
-                } else {
-                    pipeline.profile.zoomRatio
-                }
                 setZoomRatioCompat(
                     characteristics = characteristics,
-                    requestedZoomRatio = requestedZoom,
+                    requestedZoomRatio = requestZoomRatio,
                 )
                 config.aperture?.let { requestedAperture ->
                     characteristics
@@ -1269,43 +1479,33 @@ internal class CameraRecorderController(
                             set(CaptureRequest.LENS_APERTURE, aperture)
                         }
                 }
-            }.build()
+            }
+            val request = requestBuilder.build()
+            val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    result: TotalCaptureResult,
+                ) {
+                    if (closed.get() || pipeline.session !== session) return
 
-            Log.i(
-                TAG,
-                "${pipeline.profile.label}: requestedFps=$requestedPipelineFps, " +
-                        "prewarm=$isInactiveConcurrentPrewarm, FPS=${pipeline.selectedFpsRange}, " +
-                        "manualExposure=$useManualExposure, lowLightBoost=$useLowLightBoost, " +
-                        "aePriority=$aePriorityMode, stabilization=$stabilizationMode, " +
-                        "OIS=$opticalStabilizationMode, NR=$noiseReductionMode, hotPixel=$hotPixelMode, " +
-                        "shading=$shadingMode, colorCorrection=$colorCorrectionMode, " +
-                        "zoom=${if (pipeline.profile.role == activeRole) config.zoomRatio else pipeline.profile.zoomRatio}, " +
-                        "aperture=${config.aperture}, " +
-                        "edge=${config.edgeEnhancement}, distortion=${config.distortionCorrection}, " +
-                        "aberration=${config.aberrationCorrection}, tonemap=${config.tonemap}",
-            )
+                    if (recoveryAttemptCount != 0) {
+                        recoveryAttemptCount = 0
+                        recoveryGeneration.incrementAndGet()
+                    }
+                    onCaptureResult(pipeline, result)
+                }
+            }
 
             session.setSingleRepeatingRequest(
                 request,
                 cameraCallbackExecutor,
-                object : CameraCaptureSession.CaptureCallback() {
-
-                    override fun onCaptureCompleted(
-                        session: CameraCaptureSession,
-                        request: CaptureRequest,
-                        result: TotalCaptureResult,
-                    ) {
-                        if (closed.get()) {
-                            return
-                        }
-
-                        onCaptureResult(
-                            pipeline,
-                            result,
-                        )
-                    }
-                },
+                captureCallback,
             )
+            pipeline.repeatingRequestBuilder = requestBuilder
+            pipeline.repeatingCaptureCallback = captureCallback
+            pipeline.lastSubmittedZoomRatio = requestZoomRatio
+            pipeline.lastZoomRequestNs = System.nanoTime()
 
             if (pipeline.profile.role == activeRole) {
                 if (resetWarmup) {
@@ -1333,7 +1533,38 @@ internal class CameraRecorderController(
                 appContext.getString(
                     R.string.error_repeating_request_failed,
                     error.message ?: appContext.getString(R.string.unknown)
-                )
+                ),
+                cameraError = error is CameraAccessException,
+            )
+        }
+    }
+
+    private fun submitZoomRequest(pipeline: CameraPipeline) {
+        val session = pipeline.session ?: return
+        val builder = pipeline.repeatingRequestBuilder ?: return
+        val callback = pipeline.repeatingCaptureCallback ?: return
+        val zoom = pipeline.zoomRatio
+        if (zoom == pipeline.lastSubmittedZoomRatio) return
+
+        runCatching {
+            builder.setZoomRatioCompat(pipeline.profile.characteristics, zoom)
+            session.setSingleRepeatingRequest(builder.build(), cameraCallbackExecutor, callback)
+            pipeline.lastSubmittedZoomRatio = zoom
+            pipeline.lastZoomRequestNs = System.nanoTime()
+        }.onFailure { error ->
+            Log.e(
+                TAG,
+                "${pipeline.profile.label}: zoom request failed at zoom=$zoom, " +
+                    "concurrentPrewarm=$concurrentCameraPrewarm",
+                error,
+            )
+            handlePipelineFailure(
+                pipeline,
+                appContext.getString(
+                    R.string.error_repeating_request_failed,
+                    error.message ?: appContext.getString(R.string.unknown),
+                ),
+                cameraError = error is CameraAccessException,
             )
         }
     }
@@ -1421,6 +1652,7 @@ internal class CameraRecorderController(
                 result = result,
                 cameraLabel = pipeline.profile.label,
                 noiseReductionMode = pipeline.appliedNoiseReductionMode,
+                targetZoomRatio = pipeline.zoomRatio,
             )
         }
         publishLiveMetrics(result)
@@ -1457,11 +1689,6 @@ internal class CameraRecorderController(
         }
 
         if (pipeline.switchPromotionStableFrames >= SWITCH_PROMOTION_STABLE_FRAMES) {
-            Log.i(
-                TAG,
-                "${pipeline.profile.label}: high-FPS switch target ready, " +
-                        "range=$appliedFpsRange, frameDurationNs=$actualFrameDurationNs",
-            )
             return true
         }
 
@@ -1511,12 +1738,6 @@ internal class CameraRecorderController(
 
         if (converged || timedOut) {
             pipeline.warmed = true
-            Log.i(
-                TAG,
-                "${pipeline.profile.label} warmed: converged=$converged, " +
-                        "elapsedMs=${elapsedNs / 1_000_000L}, AE=$aeState, AWB=$awbState",
-            )
-
             if (pendingActivationRole == pipeline.profile.role) {
                 activatePipeline(pipeline)
             } else if (pipeline.profile.role == activeRole) {
@@ -1537,6 +1758,7 @@ internal class CameraRecorderController(
         val old = activePipeline()
         if (old === target) {
             pendingActivationRole = null
+            switchRequestPending.set(false)
             updateStateForActivePipeline(isBusy = false, isSwitching = false)
             refreshReadyStatus()
             return
@@ -1549,18 +1771,8 @@ internal class CameraRecorderController(
             old?.renderer?.detachPreview()
 
             activeRole = target.profile.role
-            config = config.copy(zoomRatio = target.profile.zoomRatio)
+            config = config.copy(zoomRatio = target.zoomRatio)
             attachPreviewToActiveRenderer()
-
-            // Keep the inactive concurrent camera at its own native/base zoom. This means the rear
-            // path can remain prewarmed at ultrawide while the front camera is active.
-            old?.takeIf { concurrentCameraPrewarm && it.session != null }?.let { inactive ->
-                submitRepeatingRequest(
-                    pipeline = inactive,
-                    resetWarmup = false,
-                    publishUiStatus = false,
-                )
-            }
 
             if (recording) {
                 val video = checkNotNull(videoEncoder)
@@ -1581,6 +1793,7 @@ internal class CameraRecorderController(
             target.switchPromotionStartedNs = 0L
             target.switchPromotionStableFrames = 0
             pendingActivationRole = null
+            switchRequestPending.set(false)
             cameraSwitchCount += 1
 
             if (!concurrentCameraPrewarm && old != null) {
@@ -1623,6 +1836,11 @@ internal class CameraRecorderController(
         val exposureTimeNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
         val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
         val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+        val activePhysicalCameraId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            result.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID)
+        } else {
+            null
+        }
         val lowLightBoostActive =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
                 result.get(CaptureResult.CONTROL_LOW_LIGHT_BOOST_STATE) ==
@@ -1644,7 +1862,7 @@ internal class CameraRecorderController(
                     exposureMs = exposureTimeNs?.div(1_000_000.0),
                     iso = iso,
                     aeState = aeState,
-                    activePhysicalCameraId = null,
+                    activePhysicalCameraId = activePhysicalCameraId,
                     lowLightBoostActive = lowLightBoostActive,
                     estimatedSourceDrops = renderStats?.estimatedSourceDrops ?: 0L,
                     encoderBackpressureEvents = renderStats?.encoderBackpressureEvents ?: 0L,
@@ -1781,8 +1999,7 @@ internal class CameraRecorderController(
         }
 
         if (
-            ContextCompat.checkSelfPermission(
-                appContext,
+            appContext.checkSelfPermission(
                 Manifest.permission.RECORD_AUDIO,
             ) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -2459,14 +2676,20 @@ internal class CameraRecorderController(
     private fun closeAllCameraDevices() {
         if (cameraExecutor.isShutdown) return
         cameraExecutor.execute {
+            pendingActivationRole = null
             pipelines.values.forEach(::closePipelineCamera)
         }
     }
 
     private fun closePipelineCamera(pipeline: CameraPipeline) {
+        pipeline.openGeneration += 1L
         runCatching { pipeline.session?.stopRepeating() }
         runCatching { pipeline.session?.close() }
         pipeline.session = null
+        pipeline.repeatingRequestBuilder = null
+        pipeline.repeatingCaptureCallback = null
+        pipeline.lastSubmittedZoomRatio = Float.NaN
+        pipeline.lastZoomRequestNs = 0L
         runCatching { pipeline.device?.close() }
         pipeline.device = null
         pipeline.opening = false
@@ -2477,17 +2700,27 @@ internal class CameraRecorderController(
     private fun handlePipelineFailure(
         pipeline: CameraPipeline,
         message: String,
+        cameraError: Boolean = false,
     ) {
         Log.e(TAG, "${pipeline.profile.label}: $message")
+
+        if (cameraError) {
+            scheduleCameraRecovery(pipeline, message)
+            return
+        }
 
         if (concurrentCameraPrewarm) {
             // A device may advertise a concurrent pair but reject this exact SurfaceTexture size or
             // stream-use-case combination. Recover by reopening only the active camera.
             concurrentCameraPrewarm = false
+            pendingActivationRole = null
+            switchRequestPending.set(false)
             pipelines.values.forEach(::closePipelineCamera)
-            activePipeline()?.let { active ->
+            val active = activePipeline()
+            active?.let {
                 openPipeline(active, deferSessionConfiguration = false)
             }
+            if (active?.device == null && active?.opening != true) return
             updateStateForActivePipeline(
                 status = appContext.getString(R.string.status_concurrent_unavailable),
                 isBusy = true,
@@ -2498,9 +2731,26 @@ internal class CameraRecorderController(
 
         if (pendingActivationRole == pipeline.profile.role && !concurrentCameraPrewarm) {
             val oldRole = activeRole
+            if (pipeline.profile.role == oldRole) {
+                closePipelineCamera(pipeline)
+                pendingActivationRole = null
+                switchRequestPending.set(false)
+                if (recording) {
+                    mainHandler.post { if (!closed.get()) stopRecording() }
+                }
+                updateError("${localizedCameraLabel(pipeline.profile)}: $message")
+                return
+            }
+            closePipelineCamera(pipeline)
             pendingActivationRole = oldRole
-            pipelines[oldRole]?.let { old ->
-                if (old.device == null && !old.opening) openPipeline(old)
+            val old = pipelines[oldRole]
+            if (old != null && old.device == null && !old.opening) openPipeline(old)
+            if (pendingActivationRole != oldRole) return
+            if (old == null || (old.session == null && !old.opening)) {
+                pendingActivationRole = null
+                switchRequestPending.set(false)
+                updateError("${localizedCameraLabel(pipeline.profile)}: $message")
+                return
             }
             updateState { state ->
                 state.copy(
@@ -2516,7 +2766,92 @@ internal class CameraRecorderController(
             return
         }
 
+        closePipelineCamera(pipeline)
+        pendingActivationRole = null
+        switchRequestPending.set(false)
+        if (pipeline.profile.role == activeRole && recording) {
+            mainHandler.post { if (!closed.get()) stopRecording() }
+        }
         updateError("${localizedCameraLabel(pipeline.profile)}: $message")
+    }
+
+    private fun scheduleCameraRecovery(
+        pipeline: CameraPipeline,
+        message: String,
+    ) {
+        if (closed.get() || !lifecycleActive || cameraRecoveryPending) return
+
+        cameraRecoveryPending = true
+        requestRevision.incrementAndGet()
+        zoomRequestRevision.incrementAndGet()
+        switchRequestPending.set(false)
+        pendingActivationRole = null
+        // A CameraService error can invalidate both devices in a concurrent pair. Reopen only
+        // the selected camera after the service has had time to release the old sessions.
+        concurrentCameraPrewarm = false
+        pipelines.values.forEach(::closePipelineCamera)
+
+        if (recoveryAttemptCount >= MAX_CAMERA_RECOVERY_ATTEMPTS) {
+            cameraRecoveryPending = false
+            recoveryAttemptCount = 0
+            if (recording) {
+                mainHandler.post { if (!closed.get()) stopRecording() }
+            }
+            updateError("${localizedCameraLabel(pipeline.profile)}: $message")
+            return
+        }
+
+        recoveryAttemptCount++
+        val generation = recoveryGeneration.incrementAndGet()
+        val delayMs = CAMERA_RECOVERY_BASE_DELAY_MS * recoveryAttemptCount
+        updateState { state ->
+            state.copy(
+                cameraReady = false,
+                isBusy = true,
+                isSwitchingCamera = false,
+                status = appContext.getString(
+                    R.string.status_restoring_camera,
+                    message,
+                    activePipeline()?.profile?.let(::localizedCameraLabel)
+                        ?: appContext.getString(R.string.camera_generic),
+                ),
+            )
+        }
+
+        requestScheduler.schedule({
+            if (closed.get() || !lifecycleActive || generation != recoveryGeneration.get()) {
+                return@schedule
+            }
+            try {
+                cameraExecutor.execute {
+                    if (closed.get() || !lifecycleActive || generation != recoveryGeneration.get()) {
+                        return@execute
+                    }
+                    cameraRecoveryPending = false
+                    val active = activePipeline() ?: return@execute
+                    openPipeline(active)
+
+                    // Some HALs never deliver onError after accepting openCamera. Do not leave
+                    // recording or preview waiting forever for the first capture result.
+                    requestScheduler.schedule({
+                        if (closed.get() || !lifecycleActive || generation != recoveryGeneration.get()) {
+                            return@schedule
+                        }
+                        try {
+                            cameraExecutor.execute {
+                                if (generation == recoveryGeneration.get() && recoveryAttemptCount != 0) {
+                                    scheduleCameraRecovery(active, message)
+                                }
+                            }
+                        } catch (_: RejectedExecutionException) {
+                            // Recorder closed while waiting for the camera.
+                        }
+                    }, CAMERA_RECOVERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                }
+            } catch (_: RejectedExecutionException) {
+                // Recorder closed while recovery was waiting.
+            }
+        }, delayMs, TimeUnit.MILLISECONDS)
     }
 
     private fun refreshReadyStatus() {
@@ -2630,10 +2965,7 @@ internal class CameraRecorderController(
                 ?.toList()
                 .orEmpty()
 
-        val capabilities =
-            characteristics
-                ?.let(::buildCapabilities)
-                ?: CameraCapabilities()
+        val capabilities = active?.let(::buildCapabilities) ?: CameraCapabilities()
 
         updateState { state ->
             state.copy(
@@ -2714,9 +3046,13 @@ internal class CameraRecorderController(
                 )
             }
 
+    private fun availableZoomRange(pipeline: CameraPipeline): Range<Float> =
+        if (concurrentCameraPrewarm) pipeline.concurrentZoomRange else pipeline.cameraZoomRange
+
     private fun buildCapabilities(
-        characteristics: CameraCharacteristics,
+        pipeline: CameraPipeline,
     ): CameraCapabilities {
+        val characteristics = pipeline.profile.characteristics
         val requestCapabilities = characteristics
             .get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
             ?: intArrayOf()
@@ -2848,7 +3184,7 @@ internal class CameraRecorderController(
             minimumFocusDistance = characteristics.get(
                 CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE
             ) ?: 0f,
-            zoomRatioRange = characteristics.zoomRatioRangeCompat(),
+            zoomRatioRange = availableZoomRange(pipeline),
             availableApertures = characteristics
                 .get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)
                 ?.toList()
@@ -2943,11 +3279,14 @@ internal class CameraRecorderController(
         }
 
         lifecycleActive = false
+        recoveryGeneration.incrementAndGet()
+        cameraRecoveryPending = false
 
         /*
          * Invalidate pending debounced CaptureRequest updates immediately.
          */
         requestRevision.incrementAndGet()
+        zoomRequestRevision.incrementAndGet()
 
         /*
          * No more state callbacks should be delivered after the public recorder
@@ -3041,11 +3380,13 @@ internal class CameraRecorderController(
         const val MAX_B_FRAMES = 4
         const val METRICS_UI_INTERVAL_NS = 500_000_000L
         const val REQUEST_UPDATE_DEBOUNCE_MS = 32L
+        const val CAMERA_RECOVERY_BASE_DELAY_MS = 500L
+        const val CAMERA_RECOVERY_TIMEOUT_MS = 2_500L
+        const val MAX_CAMERA_RECOVERY_ATTEMPTS = 3
         const val CONCURRENT_PREWARM_MAX_FPS = 30
         const val SWITCH_PROMOTION_STABLE_FRAMES = 1
         const val SWITCH_FPS_TOLERANCE_DIVISOR = 5
         const val MAX_SWITCH_PROMOTION_WAIT_NS = 300_000_000L
-        const val ZOOM_UI_INTERVAL_NS = 32_000_000L
         const val MIN_WARMUP_NS = 300_000_000L
         const val MAX_WARMUP_NS = 1_500_000_000L
         const val STABLE_3A_FRAMES = 4

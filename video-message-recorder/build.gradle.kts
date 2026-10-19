@@ -14,7 +14,8 @@ version =
 
 android {
     namespace = "io.github.webarmour.videomessagerecorder"
-    compileSdk = libs.versions.compileSdk.get().toInt()
+    // Keep the published AAR consumable by applications built with Android API 36.
+    compileSdk = libs.versions.libraryCompileSdk.get().toInt()
 
     defaultConfig {
         minSdk = libs.versions.minSdk.get().toInt()
@@ -26,6 +27,16 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
 
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+        }
+    }
+
     publishing {
         singleVariant(
             "release"
@@ -33,10 +44,6 @@ android {
             withSourcesJar()
         }
     }
-}
-
-dependencies {
-    implementation(libs.androidx.core.ktx)
 }
 
 kotlin {

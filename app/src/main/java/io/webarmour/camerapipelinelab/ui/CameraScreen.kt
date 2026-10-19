@@ -5,7 +5,10 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -58,6 +62,7 @@ import io.github.webarmour.videomessagerecorder.camera.ShadingSetting
 import io.github.webarmour.videomessagerecorder.camera.StabilizationSetting
 import io.github.webarmour.videomessagerecorder.camera.TonemapSetting
 import io.github.webarmour.videomessagerecorder.camera.VideoQuality
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private val PanelColor = Color(0xFF171717)
@@ -120,12 +125,32 @@ private fun CameraPreview(
                     modifier = Modifier
                         .matchParentSize()
                         .pointerInput(zoomRange.lower, zoomRange.upper) {
-                            detectTransformGestures { _, _, zoomChange, _ ->
-                                if (zoomChange != 1f) {
-                                    val nextZoom = (currentZoom * zoomChange)
-                                        .coerceIn(zoomRange.lower, zoomRange.upper)
-                                    currentZoomCallback(nextZoom)
-                                }
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false)
+                                var gestureZoom = currentZoom
+                                var zoomSinceDown = 1f
+                                var pastTouchSlop = false
+                                do {
+                                    val event = awaitPointerEvent()
+                                    val canceled = event.changes.any { it.isConsumed }
+                                    if (!canceled) {
+                                        val change = event.calculateZoom()
+                                        if (!pastTouchSlop) {
+                                            zoomSinceDown *= change
+                                            pastTouchSlop = abs(1f - zoomSinceDown) *
+                                                event.calculateCentroidSize(useCurrent = false) >
+                                                viewConfiguration.touchSlop
+                                        }
+                                        if (pastTouchSlop && change != 1f) {
+                                            gestureZoom = (gestureZoom * change)
+                                                .coerceIn(zoomRange.lower, zoomRange.upper)
+                                            currentZoomCallback(gestureZoom)
+                                            event.changes.forEach { pointer ->
+                                                if (pointer.positionChanged()) pointer.consume()
+                                            }
+                                        }
+                                    }
+                                } while (!canceled && event.changes.any { it.pressed })
                             }
                         },
                 ) {}
