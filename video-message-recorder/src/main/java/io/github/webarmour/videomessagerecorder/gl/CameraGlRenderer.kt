@@ -88,9 +88,9 @@ internal class PresentationTimestampGate {
 /**
  * Renders one Camera2 SurfaceTexture into preview and, when recording, MediaCodec.
  *
- * SurfaceTexture#getTransformMatrix() is the only transformation applied in texture space.
- * Rotation, mirroring and square center-crop are geometry operations. This keeps OEM camera
- * producer transforms intact and avoids double-transforming OnePlus/Samsung/Pixel buffers.
+ * SurfaceTexture#getTransformMatrix() preserves the producer transform. Optional center zoom
+ * changes texture coordinates before that transform; rotation, mirroring and square center-crop
+ * remain geometry operations.
  */
 internal data class RendererPerformanceStats(
     val sourceFrames: Long,
@@ -160,11 +160,13 @@ internal class CameraGlRenderer(
     private var positionLocation = -1
     private var texCoordLocation = -1
     private var textureMatrixLocation = -1
+    private var zoomRatioLocation = -1
     private var samplerLocation = -1
     private var circleMaskLocation = -1
     private var viewportSizeLocation = -1
 
     private val stMatrix = FloatArray(16)
+    @Volatile private var digitalZoomRatio = 1f
     private val renderPreviewTask = Runnable {
         previewRenderPending = false
         if (!hasCameraFrame || !previewContentVisible ||
@@ -221,6 +223,10 @@ internal class CameraGlRenderer(
             this.displayRotationDegrees = normalized
             rebuildVertexBuffer()
         }
+    }
+
+    fun setDigitalZoomRatio(ratio: Float) {
+        digitalZoomRatio = ratio.takeIf { it.isFinite() && it >= 1f } ?: 1f
     }
 
     fun setPreviewContentVisible(
@@ -726,6 +732,7 @@ internal class CameraGlRenderer(
         )
 
         GLES20.glUniformMatrix4fv(textureMatrixLocation, 1, false, stMatrix, 0)
+        GLES20.glUniform1f(zoomRatioLocation, digitalZoomRatio)
         GLES20.glUniform1f(circleMaskLocation, if (circleMask) 1f else 0f)
         GLES20.glUniform2f(viewportSizeLocation, width.toFloat(), height.toFloat())
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -880,6 +887,7 @@ internal class CameraGlRenderer(
         positionLocation = GLES20.glGetAttribLocation(program, "aPosition")
         texCoordLocation = GLES20.glGetAttribLocation(program, "aTextureCoord")
         textureMatrixLocation = GLES20.glGetUniformLocation(program, "uTextureMatrix")
+        zoomRatioLocation = GLES20.glGetUniformLocation(program, "uZoomRatio")
         samplerLocation = GLES20.glGetUniformLocation(program, "sTexture")
         circleMaskLocation = GLES20.glGetUniformLocation(program, "uCircleMask")
         viewportSizeLocation = GLES20.glGetUniformLocation(program, "uViewportSize")
@@ -888,6 +896,7 @@ internal class CameraGlRenderer(
             positionLocation >= 0 &&
                 texCoordLocation >= 0 &&
                 textureMatrixLocation >= 0 &&
+                zoomRatioLocation >= 0 &&
                 circleMaskLocation >= 0 &&
                 viewportSizeLocation >= 0
         ) { "Unable to resolve GL shader locations" }
@@ -1052,11 +1061,13 @@ internal class CameraGlRenderer(
             attribute vec4 aPosition;
             attribute vec4 aTextureCoord;
             uniform mat4 uTextureMatrix;
+            uniform float uZoomRatio;
             varying vec2 vTextureCoord;
 
             void main() {
                 gl_Position = aPosition;
-                vTextureCoord = (uTextureMatrix * aTextureCoord).xy;
+                vec2 centered = (aTextureCoord.xy - vec2(0.5)) / uZoomRatio + vec2(0.5);
+                vTextureCoord = (uTextureMatrix * vec4(centered, 0.0, 1.0)).xy;
             }
         """
 
