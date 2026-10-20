@@ -297,7 +297,7 @@ internal class VideoEncoder(
     private companion object {
         const val TAG = "CameraPipelineLab"
         const val MIME = MediaFormat.MIMETYPE_VIDEO_AVC
-        const val DEQUEUE_TIMEOUT_US = 10_000L
+        const val DEQUEUE_TIMEOUT_US = 50_000L
         const val DRAIN_TIMEOUT_MS = 5_000L
     }
 }

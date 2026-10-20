@@ -187,33 +187,6 @@ internal class CameraGlRenderer(
 
     private val stMatrix = FloatArray(16)
     @Volatile private var digitalZoomRatio = 1f
-    private val renderPreviewTask = Runnable {
-        previewRenderPending = false
-        if (!hasCameraFrame || !previewContentVisible ||
-            previewEglSurface == EGL14.EGL_NO_SURFACE
-        ) return@Runnable
-
-        runCatching {
-            val drawStartedNs = System.nanoTime()
-            renderTo(previewEglSurface, previewWidth, previewHeight, circleMask = true)
-            val drawDurationNs = System.nanoTime() - drawStartedNs
-            maxPreviewDrawNs = max(maxPreviewDrawNs, drawDurationNs)
-            if (drawDurationNs > expectedFrameIntervalNs) {
-                previewDrawOverBudgetEvents.incrementAndGet()
-            }
-            val swapStartedNs = System.nanoTime()
-            val swapped = swapPreviewBuffers()
-            val swapDurationNs = System.nanoTime() - swapStartedNs
-            if (swapped) previewFrames.incrementAndGet()
-            if (swapDurationNs > maxPreviewSwapNs) maxPreviewSwapNs = swapDurationNs
-            if (swapDurationNs > expectedFrameIntervalNs) {
-                previewBackpressureEvents.incrementAndGet()
-            }
-        }.onFailure { error ->
-            Log.e(TAG, "Unable to render preview frame", error)
-        }
-    }
-
     private var vertexBuffer: FloatBuffer = floatBufferOf(*DEFAULT_VERTICES)
     private val textureBuffer: FloatBuffer = floatBufferOf(*DEFAULT_TEX_COORDS)
 
@@ -609,15 +582,26 @@ internal class CameraGlRenderer(
                 }
             }
 
-            // Keep preview work out of the camera-frame callback. A single pending task draws
-            // the newest texture, so a busy TextureView cannot queue one preview draw per
-            // encoded frame and delay the next camera/encoder frame indefinitely.
             if (previewEglSurface != EGL14.EGL_NO_SURFACE && previewContentVisible) {
-                if (!previewRenderPending) {
-                    previewRenderPending = true
-                    handler.post(renderPreviewTask)
-                } else {
-                    previewFramesCoalesced.incrementAndGet()
+                val drawStartedNs = System.nanoTime()
+                renderTo(
+                    target = previewEglSurface,
+                    width = previewWidth,
+                    height = previewHeight,
+                    circleMask = true,
+                )
+                val drawDurationNs = System.nanoTime() - drawStartedNs
+                maxPreviewDrawNs = max(maxPreviewDrawNs, drawDurationNs)
+                if (drawDurationNs > expectedFrameIntervalNs) {
+                    previewDrawOverBudgetEvents.incrementAndGet()
+                }
+                val swapStartedNs = System.nanoTime()
+                val swapped = swapPreviewBuffers()
+                val swapDurationNs = System.nanoTime() - swapStartedNs
+                if (swapped) previewFrames.incrementAndGet()
+                if (swapDurationNs > maxPreviewSwapNs) maxPreviewSwapNs = swapDurationNs
+                if (swapDurationNs > expectedFrameIntervalNs) {
+                    previewBackpressureEvents.incrementAndGet()
                 }
             }
         }.onFailure { error ->

@@ -176,7 +176,7 @@ internal class AudioEncoder(
         var eos = false
 
         while (!eos) {
-            val index = codec.dequeueOutputBuffer(info, 10_000)
+            val index = codec.dequeueOutputBuffer(info, 50_000L)
             when {
                 index == MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
 
