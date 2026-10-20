@@ -110,7 +110,7 @@ internal class CameraRecorderController(
         var stable3AFrames = 0
         var warmed = false
 
-        // When the inactive concurrent camera is kept at 30 fps but recording is 60 fps,
+        // When the inactive concurrent camera is kept at 15 fps but recording is 60 fps,
         // switching first promotes this camera to the recording rate. The old renderer stays
         // attached until the promoted request is actually observed in CaptureResult, which hides
         // vendor sensor/ISP mode-switch latency from preview and MediaCodec.
@@ -2984,6 +2984,8 @@ internal class CameraRecorderController(
                             add("rendererMaxPreviewSwapMs=${renderPerformance.maxOfOrNull { it.maxPreviewSwapNs }?.div(1_000_000.0) ?: 0.0}")
                             add("rendererMaxSourceAcquireMs=${renderPerformance.maxOfOrNull { it.maxSourceAcquireNs }?.div(1_000_000.0) ?: 0.0}")
                             add("rendererMaxEncoderDrawMs=${renderPerformance.maxOfOrNull { it.maxEncoderDrawNs }?.div(1_000_000.0) ?: 0.0}")
+                            add("rendererMaxEncoderGlSetupMs=${renderPerformance.maxOfOrNull { it.maxEncoderGlSetupNs }?.div(1_000_000.0) ?: 0.0}")
+                            add("rendererMaxEncoderGlDrawCallMs=${renderPerformance.maxOfOrNull { it.maxEncoderGlDrawCallNs }?.div(1_000_000.0) ?: 0.0}")
                             add("rendererMaxPreviewDrawMs=${renderPerformance.maxOfOrNull { it.maxPreviewDrawNs }?.div(1_000_000.0) ?: 0.0}")
                             renderPerformanceByRole.forEach { (role, stats) ->
                                 add("renderer.${role.name}.threadPriority=${stats.threadPriority}")
@@ -2996,6 +2998,8 @@ internal class CameraRecorderController(
                                 add("renderer.${role.name}.previewDrawOverBudgetEvents=${stats.previewDrawOverBudgetEvents}")
                                 add("renderer.${role.name}.maxSourceAcquireMs=${stats.maxSourceAcquireNs / 1_000_000.0}")
                                 add("renderer.${role.name}.maxEncoderDrawMs=${stats.maxEncoderDrawNs / 1_000_000.0}")
+                                add("renderer.${role.name}.maxEncoderGlSetupMs=${stats.maxEncoderGlSetupNs / 1_000_000.0}")
+                                add("renderer.${role.name}.maxEncoderGlDrawCallMs=${stats.maxEncoderGlDrawCallNs / 1_000_000.0}")
                                 add("renderer.${role.name}.maxEglMakeCurrentMs=${stats.maxEglMakeCurrentNs / 1_000_000.0}")
                             }
                             add("maxPendingZoomRequests=${pipelines.values.maxOfOrNull { it.maxPendingZoomRequests } ?: 0L}")
@@ -3371,7 +3375,7 @@ internal class CameraRecorderController(
 
         if (concurrentCameraPrewarm && concurrentPrewarmFps > CONCURRENT_PREWARM_MAX_FPS) {
             // Advertised stream configurations do not guarantee that the vendor ISP can
-            // sustain them simultaneously. Keep both cameras warm at 30 fps after a failure.
+            // sustain them simultaneously. Retry with the inactive camera capped at 15 fps.
             concurrentHighFpsRejected = true
             concurrentPrewarmFps = minOf(config.frameRate, CONCURRENT_PREWARM_MAX_FPS)
             Log.w(TAG, "Concurrent high-FPS prewarm failed; retrying with $concurrentPrewarmFps fps")
@@ -3982,7 +3986,9 @@ internal class CameraRecorderController(
         const val CAMERA_RECOVERY_TIMEOUT_MS = 2_500L
         const val CAMERA_CLOSE_TIMEOUT_MS = 2_000L
         const val MAX_CAMERA_RECOVERY_ATTEMPTS = 5
-        const val CONCURRENT_PREWARM_MAX_FPS = 30
+        // Both camera streams stay active during recording. Keep the inactive stream just fast
+        // enough for a warm switch while reserving ISP/GPU bandwidth for the 60 fps output.
+        const val CONCURRENT_PREWARM_MAX_FPS = 15
         const val SWITCH_FPS_TOLERANCE_DIVISOR = 5
         const val MAX_SWITCH_PROMOTION_WAIT_NS = 300_000_000L
         const val MAX_SWITCH_AE_WAIT_NS = 150_000_000L

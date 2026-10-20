@@ -111,6 +111,8 @@ internal data class RendererPerformanceStats(
     val maxEncoderDrawNs: Long,
     val maxPreviewDrawNs: Long,
     val maxEglMakeCurrentNs: Long,
+    val maxEncoderGlSetupNs: Long,
+    val maxEncoderGlDrawCallNs: Long,
 )
 
 internal class CameraGlRenderer(
@@ -166,6 +168,8 @@ internal class CameraGlRenderer(
     @Volatile private var maxEncoderDrawNs = 0L
     @Volatile private var maxPreviewDrawNs = 0L
     @Volatile private var maxEglMakeCurrentNs = 0L
+    @Volatile private var maxEncoderGlSetupNs = 0L
+    @Volatile private var maxEncoderGlDrawCallNs = 0L
 
     private var cameraSurfaceTexture: SurfaceTexture? = null
     private var cameraInputSurface: Surface? = null
@@ -291,7 +295,7 @@ internal class CameraGlRenderer(
             } else if (hasCameraFrame) {
                 // A prewarmed camera already has a texture. Publish it immediately instead of
                 // waiting for its next frame after the switch.
-                renderTo(previewEglSurface, previewWidth, previewHeight, circleMask = true)
+                renderTo(previewEglSurface, previewWidth, previewHeight, circleMask = false)
                 swapPreviewBuffers()
             }
         }
@@ -370,6 +374,8 @@ internal class CameraGlRenderer(
         maxEncoderDrawNs = maxEncoderDrawNs,
         maxPreviewDrawNs = maxPreviewDrawNs,
         maxEglMakeCurrentNs = maxEglMakeCurrentNs,
+        maxEncoderGlSetupNs = maxEncoderGlSetupNs,
+        maxEncoderGlDrawCallNs = maxEncoderGlDrawCallNs,
     )
 
     fun resetPerformanceStats() {
@@ -396,6 +402,8 @@ internal class CameraGlRenderer(
         maxEncoderDrawNs = 0L
         maxPreviewDrawNs = 0L
         maxEglMakeCurrentNs = 0L
+        maxEncoderGlSetupNs = 0L
+        maxEncoderGlDrawCallNs = 0L
         lastSourceTimestampNs = Long.MIN_VALUE
     }
 
@@ -588,7 +596,7 @@ internal class CameraGlRenderer(
                     target = previewEglSurface,
                     width = previewWidth,
                     height = previewHeight,
-                    circleMask = true,
+                    circleMask = false,
                 )
                 val drawDurationNs = System.nanoTime() - drawStartedNs
                 maxPreviewDrawNs = max(maxPreviewDrawNs, drawDurationNs)
@@ -748,6 +756,8 @@ internal class CameraGlRenderer(
         val makeCurrentStartedNs = System.nanoTime()
         makeCurrent(target)
         maxEglMakeCurrentNs = max(maxEglMakeCurrentNs, System.nanoTime() - makeCurrentStartedNs)
+        val measureEncoder = target == encoderEglSurface
+        val setupStartedNs = if (measureEncoder) System.nanoTime() else 0L
         GLES20.glViewport(0, 0, width, height)
         // The quad covers the full viewport, and the fragment shader paints the mask outside
         // the circle. Clearing each output first adds a full-surface GPU pass per frame.
@@ -784,7 +794,14 @@ internal class CameraGlRenderer(
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
         GLES20.glUniform1i(samplerLocation, 0)
 
+        if (measureEncoder) {
+            maxEncoderGlSetupNs = max(maxEncoderGlSetupNs, System.nanoTime() - setupStartedNs)
+        }
+        val drawCallStartedNs = if (measureEncoder) System.nanoTime() else 0L
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        if (measureEncoder) {
+            maxEncoderGlDrawCallNs = max(maxEncoderGlDrawCallNs, System.nanoTime() - drawCallStartedNs)
+        }
 
         GLES20.glDisableVertexAttribArray(positionLocation)
         GLES20.glDisableVertexAttribArray(texCoordLocation)

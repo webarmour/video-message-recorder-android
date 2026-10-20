@@ -117,13 +117,6 @@ internal class AudioEncoder(
 
             if (bytesRead <= 0) continue
 
-            val inputIndex = codec.dequeueInputBuffer(10_000)
-            if (inputIndex < 0) continue
-
-            val inputBuffer = codec.getInputBuffer(inputIndex) ?: continue
-            inputBuffer.clear()
-            inputBuffer.put(pcmBuffer, 0, bytesRead)
-
             val framesRead = bytesRead / bytesPerFrame
             val timestampStatus = audioRecord.getTimestamp(
                 audioTimestamp,
@@ -147,6 +140,17 @@ internal class AudioEncoder(
                 submittedFrames * 1_000_000_000L / config.audioSampleRate
             val ptsUs = ptsNs / 1_000L
 
+            var inputIndex = -1
+            while (recording.get() && inputIndex < 0) {
+                inputIndex = codec.dequeueInputBuffer(10_000)
+            }
+            if (inputIndex < 0) break
+
+            val inputBuffer = checkNotNull(codec.getInputBuffer(inputIndex)) {
+                "AAC input buffer unavailable"
+            }
+            inputBuffer.clear()
+            inputBuffer.put(pcmBuffer, 0, bytesRead)
             codec.queueInputBuffer(inputIndex, 0, bytesRead, ptsUs, 0)
 
             submittedFrames += framesRead
