@@ -104,24 +104,25 @@ internal class AudioEncoder(
         var fallbackStreamStartNs: Long? = null
         val audioTimestamp = AudioTimestamp()
         val bytesPerFrame = 2 // PCM16 mono
+        val bufferSize = max(minBufferSize, 4_096)
+        val pcmBuffer = ByteArray(bufferSize)
 
         while (recording.get()) {
+            val bytesRead = audioRecord.read(
+                pcmBuffer,
+                0,
+                pcmBuffer.size,
+                AudioRecord.READ_BLOCKING,
+            )
+
+            if (bytesRead <= 0) continue
+
             val inputIndex = codec.dequeueInputBuffer(10_000)
             if (inputIndex < 0) continue
 
             val inputBuffer = codec.getInputBuffer(inputIndex) ?: continue
             inputBuffer.clear()
-
-            val bytesRead = audioRecord.read(
-                inputBuffer,
-                inputBuffer.capacity(),
-                AudioRecord.READ_BLOCKING,
-            )
-
-            if (bytesRead <= 0) {
-                codec.queueInputBuffer(inputIndex, 0, 0, lastPtsUs, 0)
-                continue
-            }
+            inputBuffer.put(pcmBuffer, 0, bytesRead)
 
             val framesRead = bytesRead / bytesPerFrame
             val timestampStatus = audioRecord.getTimestamp(
