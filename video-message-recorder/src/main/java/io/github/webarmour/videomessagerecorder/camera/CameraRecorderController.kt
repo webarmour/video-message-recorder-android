@@ -167,6 +167,7 @@ internal class CameraRecorderController(
     private var closeWaitScheduled = false
     private var closeWaitGeneration = 0L
     @Volatile private var activeRole = CameraRole.FRONT
+    @Volatile private var diagnosticsMode: DiagnosticsMode = DiagnosticsMode.Disabled
     private var pendingActivationRole: CameraRole? = null
     @Volatile private var concurrentCameraPrewarm = false
     private var concurrentVideoRecordUseCase = true
@@ -796,6 +797,8 @@ internal class CameraRecorderController(
         rear: CameraPipeline,
         allowVideoRecordUseCase: Boolean,
     ): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        if (appContext.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return false
         val callback = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(session: CameraCaptureSession) = Unit
             override fun onConfigureFailed(session: CameraCaptureSession) = Unit
@@ -2325,6 +2328,7 @@ internal class CameraRecorderController(
     }
 
     private fun publishLiveMetrics(result: TotalCaptureResult) {
+        if (diagnosticsMode == DiagnosticsMode.Disabled) return
         val nowNs = System.nanoTime()
         if (nowNs - lastMetricsUiUpdateNs < METRICS_UI_INTERVAL_NS) return
         lastMetricsUiUpdateNs = nowNs
@@ -2703,6 +2707,7 @@ internal class CameraRecorderController(
     fun setDiagnosticsMode(
         mode: DiagnosticsMode,
     ) {
+        this.diagnosticsMode = mode
         telemetry.setMode(
             mode
         )
