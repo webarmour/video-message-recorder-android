@@ -68,13 +68,8 @@ internal class CameraRecorderController(
         val inputSurface: Surface,
     ) {
         val cameraZoomRange = profile.characteristics.zoomRatioRangeCompat()
-        // Zoom the shared preview/encoder texture without reconfiguring the camera stream.
-        // A front camera with a zoom-out lens keeps Camera2 zoom to preserve its full range.
-        val zoomInRenderer =
-            (profile.role == CameraRole.FRONT && cameraZoomRange.lower >= 1f) ||
-                (profile.role == CameraRole.REAR_WIDE &&
-                    profile.characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
-                        ?.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA) == true)
+        // Front camera uses GL shader digital zoom; Rear camera uses Camera2 hardware sensor zoom (CONTROL_ZOOM_RATIO / SCALER_CROP_REGION).
+        val zoomInRenderer = profile.role == CameraRole.FRONT
         val concurrentZoomRange = Range(
             1f,
             minOf(
@@ -305,9 +300,9 @@ internal class CameraRecorderController(
                     return@execute
                 }
 
-                // A camera's previous pinch zoom must not become its next starting zoom.
-                // Reset the outgoing request before showing the already warm target.
+                // Blur the active renderer's last frame into the preview surface during switch.
                 activePipeline()?.let { outgoing ->
+                    outgoing.renderer.setBlurPreview(true)
                     outgoing.zoomRatio = 1f
                     if (outgoing.zoomInRenderer) outgoing.renderer.setDigitalZoomRatio(1f)
                     if (concurrentCameraPrewarm && outgoing.session != null &&
@@ -559,13 +554,7 @@ internal class CameraRecorderController(
                 zoomUpdateScheduled.set(false)
                 return
             }
-            // Hardware zoom remains available on cameras that need their optical zoom-out range.
-            // Keep the slower request cadence for the logical rear camera.
-            val maxRequestRate = if (pipeline.profile.role == CameraRole.FRONT) {
-                config.frameRate
-            } else {
-                minOf(config.frameRate, MAX_REAR_ZOOM_REQUESTS_PER_SECOND)
-            }
+            val maxRequestRate = config.frameRate
             val frameIntervalNs = 1_000_000_000L /
                 maxRequestRate.coerceAtLeast(1)
             val lastRequestNs = pipeline.lastZoomRequestNs
@@ -716,30 +705,8 @@ internal class CameraRecorderController(
             }
         }
 
-        val front = pipelines[CameraRole.FRONT]
-        val rear = pipelines[CameraRole.REAR_WIDE]
-        concurrentCameraPrewarm = if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-            front != null &&
-            rear != null
-        ) {
-            val pairAdvertised = cameraManager.concurrentCameraIds.any { combination ->
-                combination.contains(front.profile.cameraId) &&
-                        combination.contains(rear.profile.cameraId)
-            }
-            if (pairAdvertised) {
-                concurrentVideoRecordUseCase = supportsConcurrentSessions(
-                    front, rear, allowVideoRecordUseCase = true,
-                )
-                concurrentVideoRecordUseCase || supportsConcurrentSessions(
-                    front, rear, allowVideoRecordUseCase = false,
-                )
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+        // Single session test: keep only 1 camera session active at a time, destroying the old session on switch and creating a new one.
+        concurrentCameraPrewarm = false
 
         activePipeline()?.let { pipeline ->
             val range = availableZoomRange(pipeline)
@@ -2265,6 +2232,8 @@ internal class CameraRecorderController(
                 )
             }
 
+            old?.renderer?.setBlurPreview(false)
+            target.renderer.setBlurPreview(false)
             // Reconnect the encoder before the preview: a slow TextureView/EGL attach must
             // not prolong the gap in the recorded video during a warm camera switch.
             attachPreviewToActiveRenderer()
@@ -3985,15 +3954,15 @@ internal class CameraRecorderController(
         const val MAX_CAMERA_RECOVERY_ATTEMPTS = 5
         // Both camera streams stay active during recording. Keep the inactive stream just fast
         // enough for a warm switch while reserving ISP/GPU bandwidth for the 60 fps output.
-        const val CONCURRENT_PREWARM_MAX_FPS = 30
+        const val CONCURRENT_PREWARM_MAX_FPS = 60
         const val SWITCH_FPS_TOLERANCE_DIVISOR = 5
         const val MAX_SWITCH_PROMOTION_WAIT_NS = 300_000_000L
         const val MAX_SWITCH_AE_WAIT_NS = 150_000_000L
         const val SWITCH_ZOOM_FRAME_TIMEOUT_MS = 500L
         const val SWITCH_FPS_PROMOTION_FRAME_TIMEOUT_MS = 1_000L
-        const val MAX_REAR_ZOOM_REQUESTS_PER_SECOND = 30
+        const val MAX_REAR_ZOOM_REQUESTS_PER_SECOND = 60
         const val MAX_PENDING_FRONT_ZOOM_REQUESTS = 6L
-        const val MAX_PENDING_REAR_ZOOM_REQUESTS = 2L
+        const val MAX_PENDING_REAR_ZOOM_REQUESTS = 6L
         const val MIN_WARMUP_NS = 300_000_000L
         const val MAX_WARMUP_NS = 1_500_000_000L
         const val STABLE_3A_FRAMES = 4

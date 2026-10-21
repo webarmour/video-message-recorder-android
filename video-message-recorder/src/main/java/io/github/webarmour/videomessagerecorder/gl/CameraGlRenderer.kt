@@ -187,10 +187,12 @@ internal class CameraGlRenderer(
     private var zoomRatioLocation = -1
     private var samplerLocation = -1
     private var circleMaskLocation = -1
+    private var blurLocation = -1
     private var viewportSizeLocation = -1
 
     private val stMatrix = FloatArray(16)
     @Volatile private var digitalZoomRatio = 1f
+    @Volatile private var isPreviewBlurred = false
     private var vertexBuffer: FloatBuffer = floatBufferOf(*DEFAULT_VERTICES)
     private val textureBuffer: FloatBuffer = floatBufferOf(*DEFAULT_TEX_COORDS)
 
@@ -249,6 +251,16 @@ internal class CameraGlRenderer(
                     height = previewHeight,
                 )
 
+                swapPreviewBuffers()
+            }
+        }
+    }
+
+    fun setBlurPreview(blur: Boolean) {
+        runOnGlAndWait {
+            isPreviewBlurred = blur
+            if (blur && previewEglSurface != EGL14.EGL_NO_SURFACE && hasCameraFrame) {
+                renderTo(previewEglSurface, previewWidth, previewHeight, circleMask = false)
                 swapPreviewBuffers()
             }
         }
@@ -789,6 +801,7 @@ internal class CameraGlRenderer(
         GLES20.glUniformMatrix4fv(textureMatrixLocation, 1, false, stMatrix, 0)
         GLES20.glUniform1f(zoomRatioLocation, digitalZoomRatio)
         GLES20.glUniform1f(circleMaskLocation, if (circleMask) 1f else 0f)
+        GLES20.glUniform1f(blurLocation, if (isPreviewBlurred && target == previewEglSurface) 1f else 0f)
         GLES20.glUniform2f(viewportSizeLocation, width.toFloat(), height.toFloat())
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
@@ -952,6 +965,7 @@ internal class CameraGlRenderer(
         zoomRatioLocation = GLES20.glGetUniformLocation(program, "uZoomRatio")
         samplerLocation = GLES20.glGetUniformLocation(program, "sTexture")
         circleMaskLocation = GLES20.glGetUniformLocation(program, "uCircleMask")
+        blurLocation = GLES20.glGetUniformLocation(program, "uBlur")
         viewportSizeLocation = GLES20.glGetUniformLocation(program, "uViewportSize")
 
         check(
@@ -1143,10 +1157,27 @@ internal class CameraGlRenderer(
             varying vec2 vTextureCoord;
             uniform samplerExternalOES sTexture;
             uniform float uCircleMask;
+            uniform float uBlur;
             uniform vec2 uViewportSize;
 
             void main() {
-                vec4 color = texture2D(sTexture, vTextureCoord);
+                vec4 color;
+                if (uBlur > 0.5) {
+                    vec2 texel = vec2(2.5 / uViewportSize.x, 2.5 / uViewportSize.y);
+                    vec4 sum = vec4(0.0);
+                    sum += texture2D(sTexture, vTextureCoord + vec2(-texel.x, -texel.y)) * 0.0625;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(0.0, -texel.y)) * 0.125;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(texel.x, -texel.y)) * 0.0625;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(-texel.x, 0.0)) * 0.125;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(0.0, 0.0)) * 0.25;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(texel.x, 0.0)) * 0.125;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(-texel.x, texel.y)) * 0.0625;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(0.0, texel.y)) * 0.125;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(texel.x, texel.y)) * 0.0625;
+                    color = sum;
+                } else {
+                    color = texture2D(sTexture, vTextureCoord);
+                }
 
                 if (uCircleMask > 0.5) {
                     vec2 centered = (gl_FragCoord.xy / uViewportSize) - vec2(0.5);
