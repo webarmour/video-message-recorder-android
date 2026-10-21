@@ -447,8 +447,14 @@ internal class CameraRecorderController(
             }
         }
 
+        val prewarmModeChanged =
+            normalized.enableConcurrentPrewarm != config.enableConcurrentPrewarm ||
+                    normalized.concurrentPrewarmFps != config.concurrentPrewarmFps
+
         val sourcePipelineChanged =
-            normalized.quality != config.quality || normalized.frameRate != config.frameRate
+            normalized.quality != config.quality ||
+                    normalized.frameRate != config.frameRate ||
+                    prewarmModeChanged
 
         val exposurePipelineChanged =
             normalized.holdFpsInLowLight != config.holdFpsInLowLight ||
@@ -705,20 +711,33 @@ internal class CameraRecorderController(
             }
         }
 
-        // Single session test: keep only 1 camera session active at a time, destroying the old session on switch and creating a new one.
-        concurrentCameraPrewarm = false
-
-        activePipeline()?.let { pipeline ->
-            val range = availableZoomRange(pipeline)
-            val zoom = pipeline.zoomRatio.coerceIn(range.lower, range.upper)
-            pipeline.zoomRatio = zoom
-            if (pipeline.zoomInRenderer) pipeline.renderer.setDigitalZoomRatio(zoom)
-            config = config.copy(zoomRatio = zoom)
+        val front = pipelines[CameraRole.FRONT]
+        val rear = pipelines[CameraRole.REAR_WIDE]
+        concurrentCameraPrewarm = if (
+            config.enableConcurrentPrewarm &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            front != null &&
+            rear != null
+        ) {
+            val pairAdvertised = cameraManager.concurrentCameraIds.any { combination ->
+                combination.contains(front.profile.cameraId) &&
+                        combination.contains(rear.profile.cameraId)
+            }
+            if (pairAdvertised) {
+                concurrentVideoRecordUseCase = supportsConcurrentSessions(
+                    front, rear, allowVideoRecordUseCase = true,
+                )
+                concurrentVideoRecordUseCase || supportsConcurrentSessions(
+                    front, rear, allowVideoRecordUseCase = false,
+                )
+            } else {
+                false
+            }
+        } else {
+            false
         }
 
-        // Keep both sessions open, but let only the camera feeding preview/encoder run at the
-        // recording cadence. This isolates the cost of consuming the inactive 60 fps stream.
-        concurrentPrewarmFps = minOf(config.frameRate, CONCURRENT_PREWARM_MAX_FPS)
+        concurrentPrewarmFps = minOf(config.frameRate, config.concurrentPrewarmFps.coerceAtLeast(1))
         Log.i(TAG, "Concurrent prewarm=$concurrentCameraPrewarm, fps=$concurrentPrewarmFps")
 
         cameraSystemPrepared = true
