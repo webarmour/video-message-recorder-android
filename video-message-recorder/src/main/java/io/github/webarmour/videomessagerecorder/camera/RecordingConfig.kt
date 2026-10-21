@@ -133,6 +133,8 @@ data class RecordingConfig(
     val quality: VideoQuality = VideoQuality.HD,
     val videoBitrate: Int = 2_500_000,
     val frameRate: Int = 60,
+    val enableConcurrentPrewarm: Boolean = false,
+    val concurrentPrewarmFps: Int = 30,
     val iFrameIntervalSeconds: Int = 1,
     val maxBFrames: Int = 2,
     val holdFpsInLowLight: Boolean = true,
