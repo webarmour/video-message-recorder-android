@@ -1245,10 +1245,7 @@ internal class CameraRecorderController(
             val ranges = characteristics.get(
                 CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES
             )
-            val isInactiveConcurrentPrewarm = concurrentCameraPrewarm &&
-                pipeline.profile.role != activeRole &&
-                pipeline.profile.role != pendingActivationRole
-            val fpsSelection = selectPipelineFpsRange(ranges, isInactiveConcurrentPrewarm)
+            val fpsSelection = chooseVideoFpsRange(ranges, config.frameRate, config.holdFpsInLowLight)
             val sessionRequest = camera
                 .createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
                 .apply {
@@ -3988,7 +3985,7 @@ internal class CameraRecorderController(
         const val MAX_CAMERA_RECOVERY_ATTEMPTS = 5
         // Both camera streams stay active during recording. Keep the inactive stream just fast
         // enough for a warm switch while reserving ISP/GPU bandwidth for the 60 fps output.
-        const val CONCURRENT_PREWARM_MAX_FPS = 15
+        const val CONCURRENT_PREWARM_MAX_FPS = 30
         const val SWITCH_FPS_TOLERANCE_DIVISOR = 5
         const val MAX_SWITCH_PROMOTION_WAIT_NS = 300_000_000L
         const val MAX_SWITCH_AE_WAIT_NS = 150_000_000L

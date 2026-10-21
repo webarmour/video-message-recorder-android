@@ -223,11 +223,10 @@ internal fun chooseVideoFpsRange(
 
     sortedRanges
         .filter { range -> targetFps in range }
-        .minWithOrNull(
+        .maxWithOrNull(
             compareBy<Range<Int>>(
-                { abs(it.upper - targetFps) },
+                { -abs(it.upper - targetFps) },
                 { it.lower },
-                { it.upper - it.lower },
             )
         )
         ?.let { range ->
@@ -237,11 +236,10 @@ internal fun chooseVideoFpsRange(
             )
         }
 
-    val fallback = sortedRanges.minWithOrNull(
+    val fallback = sortedRanges.maxWithOrNull(
         compareBy<Range<Int>>(
-            { abs(it.upper - targetFps) },
-            { abs(it.lower - targetFps) },
-            { it.upper - it.lower },
+            { -abs(it.upper - targetFps) },
+            { it.lower },
         )
     )
 
