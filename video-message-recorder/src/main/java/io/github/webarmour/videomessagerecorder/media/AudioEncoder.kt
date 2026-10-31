@@ -60,7 +60,9 @@ internal class AudioEncoder(
             1,
         ).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_BIT_RATE, config.audioBitrate)
+            val bitrateRange = codec.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_AUDIO_AAC)
+                .audioCapabilities?.bitrateRange
+            setInteger(MediaFormat.KEY_BIT_RATE, bitrateRange?.clamp(config.audioBitrate) ?: config.audioBitrate)
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, max(minBufferSize, 16_384))
         }
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)

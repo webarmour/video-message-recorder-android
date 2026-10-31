@@ -183,7 +183,8 @@ internal class VideoEncoder(
                 MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
             )
-            setInteger(MediaFormat.KEY_BIT_RATE, config.videoBitrate)
+            val bitrateRange = capabilities.videoCapabilities?.bitrateRange
+            setInteger(MediaFormat.KEY_BIT_RATE, bitrateRange?.clamp(config.videoBitrate) ?: config.videoBitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, config.frameRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, config.iFrameIntervalSeconds)
             setInteger(MediaFormat.KEY_PRIORITY, 0)
