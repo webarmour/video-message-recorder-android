@@ -64,7 +64,8 @@ internal fun rotationToDegrees(rotation: Int): Int = when (rotation) {
 
 /**
  * Choose a camera SurfaceTexture size that contains enough real sensor pixels for the requested
- * square encoder output. Prefer a 16:9 video-like source and avoid upscaling whenever possible.
+ * square encoder output. Once the short side can cover the square, extra pixels outside that
+ * square only add Camera2 and GPU work. Prefer the lowest pixel count at the requested rate.
  */
 internal fun chooseCameraSourceSize(
     characteristics: CameraCharacteristics,
@@ -93,16 +94,20 @@ internal fun chooseCameraSourceSize(
     val enoughPixels = rateCompatible.filter { size ->
         minOf(size.width, size.height) >= targetShortSide
     }
-    val candidates = enoughPixels.ifEmpty { rateCompatible }
+    if (enoughPixels.isNotEmpty()) {
+        return enoughPixels.minWith(
+            compareBy<Size> { it.width.toLong() * it.height.toLong() }
+                .thenBy { abs(it.width - it.height) }
+        )
+    }
 
     val targetAspect = 16f / 9f
-    return candidates.minBy { size ->
+    return rateCompatible.minBy { size ->
         val longSide = maxOf(size.width, size.height).toFloat()
         val shortSide = minOf(size.width, size.height).toFloat()
         val aspect = longSide / shortSide
         val shortSidePenalty = abs(shortSide - targetShortSide) / targetShortSide.coerceAtLeast(1)
-        val upscalePenalty = if (shortSide < targetShortSide) 100.0 else 0.0
-        upscalePenalty + shortSidePenalty + abs(aspect - targetAspect) * 0.35
+        shortSidePenalty + abs(aspect - targetAspect) * 0.35
     }
 }
 
@@ -223,11 +228,10 @@ internal fun chooseVideoFpsRange(
 
     sortedRanges
         .filter { range -> targetFps in range }
-        .minWithOrNull(
+        .maxWithOrNull(
             compareBy<Range<Int>>(
-                { abs(it.upper - targetFps) },
+                { -abs(it.upper - targetFps) },
                 { it.lower },
-                { it.upper - it.lower },
             )
         )
         ?.let { range ->
@@ -237,11 +241,10 @@ internal fun chooseVideoFpsRange(
             )
         }
 
-    val fallback = sortedRanges.minWithOrNull(
+    val fallback = sortedRanges.maxWithOrNull(
         compareBy<Range<Int>>(
-            { abs(it.upper - targetFps) },
-            { abs(it.lower - targetFps) },
-            { it.upper - it.lower },
+            { -abs(it.upper - targetFps) },
+            { it.lower },
         )
     )
 

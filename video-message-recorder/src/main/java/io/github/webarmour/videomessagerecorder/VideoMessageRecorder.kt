@@ -2,10 +2,11 @@ package io.github.webarmour.videomessagerecorder
 
 import android.content.Context
 import android.view.Surface
+import io.github.webarmour.videomessagerecorder.camera.AutoRecordingConfigResolver
 import io.github.webarmour.videomessagerecorder.camera.CameraRecorderController
+import io.github.webarmour.videomessagerecorder.camera.CameraRole
 import io.github.webarmour.videomessagerecorder.camera.CameraUiState
 import io.github.webarmour.videomessagerecorder.camera.RecordingConfig
-import io.github.webarmour.videomessagerecorder.camera.AutoRecordingConfigResolver
 
 class VideoMessageRecorder(
     context: Context,
@@ -74,6 +75,14 @@ class VideoMessageRecorder(
         controller.setPermissionGranted(
             granted
         )
+    }
+
+    /**
+     * Restore the host's saved camera before onStart, only when remembering cameras is enabled.
+     * Otherwise the recorder starts with the front camera. Unavailable cameras fall back safely.
+     */
+    fun restoreLastCamera(role: CameraRole) {
+        controller.restoreLastCamera(role)
     }
 
     fun onStart() {

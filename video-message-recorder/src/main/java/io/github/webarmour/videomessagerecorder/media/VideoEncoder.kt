@@ -183,7 +183,8 @@ internal class VideoEncoder(
                 MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
             )
-            setInteger(MediaFormat.KEY_BIT_RATE, config.videoBitrate)
+            val bitrateRange = capabilities.videoCapabilities?.bitrateRange
+            setInteger(MediaFormat.KEY_BIT_RATE, bitrateRange?.clamp(config.videoBitrate) ?: config.videoBitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, config.frameRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, config.iFrameIntervalSeconds)
             setInteger(MediaFormat.KEY_PRIORITY, 0)
@@ -297,7 +298,7 @@ internal class VideoEncoder(
     private companion object {
         const val TAG = "CameraPipelineLab"
         const val MIME = MediaFormat.MIMETYPE_VIDEO_AVC
-        const val DEQUEUE_TIMEOUT_US = 10_000L
+        const val DEQUEUE_TIMEOUT_US = 50_000L
         const val DRAIN_TIMEOUT_MS = 5_000L
     }
 }

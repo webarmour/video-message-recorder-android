@@ -111,6 +111,8 @@ internal data class RendererPerformanceStats(
     val maxEncoderDrawNs: Long,
     val maxPreviewDrawNs: Long,
     val maxEglMakeCurrentNs: Long,
+    val maxEncoderGlSetupNs: Long,
+    val maxEncoderGlDrawCallNs: Long,
 )
 
 internal class CameraGlRenderer(
@@ -143,6 +145,7 @@ internal class CameraGlRenderer(
     private var encoderCircleMask = false
     private var expectedFrameIntervalNs = 33_333_333L
     private var lastSourceTimestampNs = Long.MIN_VALUE
+    private var lastRenderedCameraTimestampNs = Long.MIN_VALUE
     private var encoderSourceTimestampBaseNs =
         Long.MIN_VALUE
 
@@ -166,6 +169,8 @@ internal class CameraGlRenderer(
     @Volatile private var maxEncoderDrawNs = 0L
     @Volatile private var maxPreviewDrawNs = 0L
     @Volatile private var maxEglMakeCurrentNs = 0L
+    @Volatile private var maxEncoderGlSetupNs = 0L
+    @Volatile private var maxEncoderGlDrawCallNs = 0L
 
     private var cameraSurfaceTexture: SurfaceTexture? = null
     private var cameraInputSurface: Surface? = null
@@ -177,43 +182,24 @@ internal class CameraGlRenderer(
     private var mirrorHorizontally = false
 
     private var program = 0
+    private var simpleProgram = 0
     private var positionLocation = -1
     private var texCoordLocation = -1
     private var textureMatrixLocation = -1
     private var zoomRatioLocation = -1
     private var samplerLocation = -1
     private var circleMaskLocation = -1
+    private var blurLocation = -1
     private var viewportSizeLocation = -1
+    private var simplePositionLocation = -1
+    private var simpleTexCoordLocation = -1
+    private var simpleTextureMatrixLocation = -1
+    private var simpleZoomRatioLocation = -1
+    private var simpleSamplerLocation = -1
 
     private val stMatrix = FloatArray(16)
     @Volatile private var digitalZoomRatio = 1f
-    private val renderPreviewTask = Runnable {
-        previewRenderPending = false
-        if (!hasCameraFrame || !previewContentVisible ||
-            previewEglSurface == EGL14.EGL_NO_SURFACE
-        ) return@Runnable
-
-        runCatching {
-            val drawStartedNs = System.nanoTime()
-            renderTo(previewEglSurface, previewWidth, previewHeight, circleMask = true)
-            val drawDurationNs = System.nanoTime() - drawStartedNs
-            maxPreviewDrawNs = max(maxPreviewDrawNs, drawDurationNs)
-            if (drawDurationNs > expectedFrameIntervalNs) {
-                previewDrawOverBudgetEvents.incrementAndGet()
-            }
-            val swapStartedNs = System.nanoTime()
-            val swapped = swapPreviewBuffers()
-            val swapDurationNs = System.nanoTime() - swapStartedNs
-            if (swapped) previewFrames.incrementAndGet()
-            if (swapDurationNs > maxPreviewSwapNs) maxPreviewSwapNs = swapDurationNs
-            if (swapDurationNs > expectedFrameIntervalNs) {
-                previewBackpressureEvents.incrementAndGet()
-            }
-        }.onFailure { error ->
-            Log.e(TAG, "Unable to render preview frame", error)
-        }
-    }
-
+    @Volatile private var isPreviewBlurred = false
     private var vertexBuffer: FloatBuffer = floatBufferOf(*DEFAULT_VERTICES)
     private val textureBuffer: FloatBuffer = floatBufferOf(*DEFAULT_TEX_COORDS)
 
@@ -277,6 +263,16 @@ internal class CameraGlRenderer(
         }
     }
 
+    fun setBlurPreview(blur: Boolean) {
+        runOnGlAndWait {
+            isPreviewBlurred = blur
+            if (blur && previewEglSurface != EGL14.EGL_NO_SURFACE && hasCameraFrame) {
+                renderTo(previewEglSurface, previewWidth, previewHeight, circleMask = false)
+                swapPreviewBuffers()
+            }
+        }
+    }
+
     fun attachPreview(
         surface: Surface,
         width: Int,
@@ -318,7 +314,7 @@ internal class CameraGlRenderer(
             } else if (hasCameraFrame) {
                 // A prewarmed camera already has a texture. Publish it immediately instead of
                 // waiting for its next frame after the switch.
-                renderTo(previewEglSurface, previewWidth, previewHeight, circleMask = true)
+                renderTo(previewEglSurface, previewWidth, previewHeight, circleMask = false)
                 swapPreviewBuffers()
             }
         }
@@ -397,6 +393,8 @@ internal class CameraGlRenderer(
         maxEncoderDrawNs = maxEncoderDrawNs,
         maxPreviewDrawNs = maxPreviewDrawNs,
         maxEglMakeCurrentNs = maxEglMakeCurrentNs,
+        maxEncoderGlSetupNs = maxEncoderGlSetupNs,
+        maxEncoderGlDrawCallNs = maxEncoderGlDrawCallNs,
     )
 
     fun resetPerformanceStats() {
@@ -423,7 +421,10 @@ internal class CameraGlRenderer(
         maxEncoderDrawNs = 0L
         maxPreviewDrawNs = 0L
         maxEglMakeCurrentNs = 0L
+        maxEncoderGlSetupNs = 0L
+        maxEncoderGlDrawCallNs = 0L
         lastSourceTimestampNs = Long.MIN_VALUE
+        lastRenderedCameraTimestampNs = Long.MIN_VALUE
     }
 
     fun detachEncoder() {
@@ -460,7 +461,6 @@ internal class CameraGlRenderer(
             val acquireStartedNs = System.nanoTime()
             surfaceTexture.updateTexImage()
             val acquireDurationNs = System.nanoTime() - acquireStartedNs
-            surfaceTexture.getTransformMatrix(stMatrix)
             inputFrames.incrementAndGet()
             maxSourceAcquireNs = max(maxSourceAcquireNs, acquireDurationNs)
             if (acquireDurationNs > expectedFrameIntervalNs) {
@@ -473,12 +473,25 @@ internal class CameraGlRenderer(
             if (encoderEglSurface == EGL14.EGL_NO_SURFACE &&
                 (previewEglSurface == EGL14.EGL_NO_SURFACE || !previewContentVisible)
             ) {
+                // A newly redirected prewarmed camera may be attached to preview before
+                // its next frame. Keep the transform for that first published frame.
+                surfaceTexture.getTransformMatrix(stMatrix)
                 lastSourceTimestampNs = Long.MIN_VALUE
                 return@runCatching
             }
 
             val cameraTimestampNs =
                 surfaceTexture.timestamp
+
+            // SurfaceTexture callbacks can accumulate while EGL is busy. updateTexImage()
+            // acquires the newest buffer, so a later queued callback can observe the same
+            // frame again. Avoid submitting that frame twice to both output surfaces.
+            if (cameraTimestampNs == lastRenderedCameraTimestampNs) {
+                previewFramesCoalesced.incrementAndGet()
+                return@runCatching
+            }
+            lastRenderedCameraTimestampNs = cameraTimestampNs
+            surfaceTexture.getTransformMatrix(stMatrix)
 
             if (
                 encoderEglSurface !=
@@ -609,15 +622,26 @@ internal class CameraGlRenderer(
                 }
             }
 
-            // Keep preview work out of the camera-frame callback. A single pending task draws
-            // the newest texture, so a busy TextureView cannot queue one preview draw per
-            // encoded frame and delay the next camera/encoder frame indefinitely.
             if (previewEglSurface != EGL14.EGL_NO_SURFACE && previewContentVisible) {
-                if (!previewRenderPending) {
-                    previewRenderPending = true
-                    handler.post(renderPreviewTask)
-                } else {
-                    previewFramesCoalesced.incrementAndGet()
+                val drawStartedNs = System.nanoTime()
+                renderTo(
+                    target = previewEglSurface,
+                    width = previewWidth,
+                    height = previewHeight,
+                    circleMask = false,
+                )
+                val drawDurationNs = System.nanoTime() - drawStartedNs
+                maxPreviewDrawNs = max(maxPreviewDrawNs, drawDurationNs)
+                if (drawDurationNs > expectedFrameIntervalNs) {
+                    previewDrawOverBudgetEvents.incrementAndGet()
+                }
+                val swapStartedNs = System.nanoTime()
+                val swapped = swapPreviewBuffers()
+                val swapDurationNs = System.nanoTime() - swapStartedNs
+                if (swapped) previewFrames.incrementAndGet()
+                if (swapDurationNs > maxPreviewSwapNs) maxPreviewSwapNs = swapDurationNs
+                if (swapDurationNs > expectedFrameIntervalNs) {
+                    previewBackpressureEvents.incrementAndGet()
                 }
             }
         }.onFailure { error ->
@@ -764,16 +788,25 @@ internal class CameraGlRenderer(
         val makeCurrentStartedNs = System.nanoTime()
         makeCurrent(target)
         maxEglMakeCurrentNs = max(maxEglMakeCurrentNs, System.nanoTime() - makeCurrentStartedNs)
+        val measureEncoder = target == encoderEglSurface
+        val setupStartedNs = if (measureEncoder) System.nanoTime() else 0L
         GLES20.glViewport(0, 0, width, height)
         // The quad covers the full viewport, and the fragment shader paints the mask outside
         // the circle. Clearing each output first adds a full-surface GPU pass per frame.
+        val useSimpleShader = !circleMask && !(isPreviewBlurred && target == previewEglSurface)
+        val drawProgram = if (useSimpleShader) simpleProgram else program
+        val drawPositionLocation = if (useSimpleShader) simplePositionLocation else positionLocation
+        val drawTexCoordLocation = if (useSimpleShader) simpleTexCoordLocation else texCoordLocation
+        val drawTextureMatrixLocation = if (useSimpleShader) simpleTextureMatrixLocation else textureMatrixLocation
+        val drawZoomRatioLocation = if (useSimpleShader) simpleZoomRatioLocation else zoomRatioLocation
+        val drawSamplerLocation = if (useSimpleShader) simpleSamplerLocation else samplerLocation
 
-        GLES20.glUseProgram(program)
+        GLES20.glUseProgram(drawProgram)
 
         vertexBuffer.position(0)
-        GLES20.glEnableVertexAttribArray(positionLocation)
+        GLES20.glEnableVertexAttribArray(drawPositionLocation)
         GLES20.glVertexAttribPointer(
-            positionLocation,
+            drawPositionLocation,
             2,
             GLES20.GL_FLOAT,
             false,
@@ -782,9 +815,9 @@ internal class CameraGlRenderer(
         )
 
         textureBuffer.position(0)
-        GLES20.glEnableVertexAttribArray(texCoordLocation)
+        GLES20.glEnableVertexAttribArray(drawTexCoordLocation)
         GLES20.glVertexAttribPointer(
-            texCoordLocation,
+            drawTexCoordLocation,
             2,
             GLES20.GL_FLOAT,
             false,
@@ -792,18 +825,28 @@ internal class CameraGlRenderer(
             textureBuffer,
         )
 
-        GLES20.glUniformMatrix4fv(textureMatrixLocation, 1, false, stMatrix, 0)
-        GLES20.glUniform1f(zoomRatioLocation, digitalZoomRatio)
-        GLES20.glUniform1f(circleMaskLocation, if (circleMask) 1f else 0f)
-        GLES20.glUniform2f(viewportSizeLocation, width.toFloat(), height.toFloat())
+        GLES20.glUniformMatrix4fv(drawTextureMatrixLocation, 1, false, stMatrix, 0)
+        GLES20.glUniform1f(drawZoomRatioLocation, digitalZoomRatio)
+        if (!useSimpleShader) {
+            GLES20.glUniform1f(circleMaskLocation, if (circleMask) 1f else 0f)
+            GLES20.glUniform1f(blurLocation, if (isPreviewBlurred && target == previewEglSurface) 1f else 0f)
+            GLES20.glUniform2f(viewportSizeLocation, width.toFloat(), height.toFloat())
+        }
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
-        GLES20.glUniform1i(samplerLocation, 0)
+        GLES20.glUniform1i(drawSamplerLocation, 0)
 
+        if (measureEncoder) {
+            maxEncoderGlSetupNs = max(maxEncoderGlSetupNs, System.nanoTime() - setupStartedNs)
+        }
+        val drawCallStartedNs = if (measureEncoder) System.nanoTime() else 0L
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        if (measureEncoder) {
+            maxEncoderGlDrawCallNs = max(maxEncoderGlDrawCallNs, System.nanoTime() - drawCallStartedNs)
+        }
 
-        GLES20.glDisableVertexAttribArray(positionLocation)
-        GLES20.glDisableVertexAttribArray(texCoordLocation)
+        GLES20.glDisableVertexAttribArray(drawPositionLocation)
+        GLES20.glDisableVertexAttribArray(drawTexCoordLocation)
     }
 
     private fun rebuildVertexBuffer() {
@@ -929,10 +972,11 @@ internal class CameraGlRenderer(
     private fun initProgram() {
         val vertexShader = compileShader(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER)
         val fragmentShader = compileShader(GLES20.GL_FRAGMENT_SHADER, FRAGMENT_SHADER)
+        val simpleFragmentShader = compileShader(GLES20.GL_FRAGMENT_SHADER, SIMPLE_FRAGMENT_SHADER)
 
-        program = GLES20.glCreateProgram().also { programId ->
+        fun linkProgram(fragment: Int): Int = GLES20.glCreateProgram().also { programId ->
             GLES20.glAttachShader(programId, vertexShader)
-            GLES20.glAttachShader(programId, fragmentShader)
+            GLES20.glAttachShader(programId, fragment)
             GLES20.glLinkProgram(programId)
 
             val status = IntArray(1)
@@ -941,9 +985,12 @@ internal class CameraGlRenderer(
                 "Program link failed: ${GLES20.glGetProgramInfoLog(programId)}"
             }
         }
+        program = linkProgram(fragmentShader)
+        simpleProgram = linkProgram(simpleFragmentShader)
 
         GLES20.glDeleteShader(vertexShader)
         GLES20.glDeleteShader(fragmentShader)
+        GLES20.glDeleteShader(simpleFragmentShader)
 
         positionLocation = GLES20.glGetAttribLocation(program, "aPosition")
         texCoordLocation = GLES20.glGetAttribLocation(program, "aTextureCoord")
@@ -951,7 +998,13 @@ internal class CameraGlRenderer(
         zoomRatioLocation = GLES20.glGetUniformLocation(program, "uZoomRatio")
         samplerLocation = GLES20.glGetUniformLocation(program, "sTexture")
         circleMaskLocation = GLES20.glGetUniformLocation(program, "uCircleMask")
+        blurLocation = GLES20.glGetUniformLocation(program, "uBlur")
         viewportSizeLocation = GLES20.glGetUniformLocation(program, "uViewportSize")
+        simplePositionLocation = GLES20.glGetAttribLocation(simpleProgram, "aPosition")
+        simpleTexCoordLocation = GLES20.glGetAttribLocation(simpleProgram, "aTextureCoord")
+        simpleTextureMatrixLocation = GLES20.glGetUniformLocation(simpleProgram, "uTextureMatrix")
+        simpleZoomRatioLocation = GLES20.glGetUniformLocation(simpleProgram, "uZoomRatio")
+        simpleSamplerLocation = GLES20.glGetUniformLocation(simpleProgram, "sTexture")
 
         check(
             positionLocation >= 0 &&
@@ -959,7 +1012,12 @@ internal class CameraGlRenderer(
                 textureMatrixLocation >= 0 &&
                 zoomRatioLocation >= 0 &&
                 circleMaskLocation >= 0 &&
-                viewportSizeLocation >= 0
+                viewportSizeLocation >= 0 &&
+                simplePositionLocation >= 0 &&
+                simpleTexCoordLocation >= 0 &&
+                simpleTextureMatrixLocation >= 0 &&
+                simpleZoomRatioLocation >= 0 &&
+                simpleSamplerLocation >= 0
         ) { "Unable to resolve GL shader locations" }
     }
 
@@ -1069,6 +1127,10 @@ internal class CameraGlRenderer(
             GLES20.glDeleteProgram(program)
             program = 0
         }
+        if (simpleProgram != 0) {
+            GLES20.glDeleteProgram(simpleProgram)
+            simpleProgram = 0
+        }
 
         if (pbufferSurface != EGL14.EGL_NO_SURFACE) {
             EGL14.eglDestroySurface(eglDisplay, pbufferSurface)
@@ -1136,16 +1198,44 @@ internal class CameraGlRenderer(
             }
         """
 
+        const val SIMPLE_FRAGMENT_SHADER = """
+            #extension GL_OES_EGL_image_external : require
+            precision mediump float;
+            varying vec2 vTextureCoord;
+            uniform samplerExternalOES sTexture;
+
+            void main() {
+                gl_FragColor = texture2D(sTexture, vTextureCoord);
+            }
+        """
+
         const val FRAGMENT_SHADER = """
             #extension GL_OES_EGL_image_external : require
             precision mediump float;
             varying vec2 vTextureCoord;
             uniform samplerExternalOES sTexture;
             uniform float uCircleMask;
+            uniform float uBlur;
             uniform vec2 uViewportSize;
 
             void main() {
-                vec4 color = texture2D(sTexture, vTextureCoord);
+                vec4 color;
+                if (uBlur > 0.5) {
+                    vec2 texel = vec2(2.5 / uViewportSize.x, 2.5 / uViewportSize.y);
+                    vec4 sum = vec4(0.0);
+                    sum += texture2D(sTexture, vTextureCoord + vec2(-texel.x, -texel.y)) * 0.0625;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(0.0, -texel.y)) * 0.125;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(texel.x, -texel.y)) * 0.0625;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(-texel.x, 0.0)) * 0.125;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(0.0, 0.0)) * 0.25;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(texel.x, 0.0)) * 0.125;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(-texel.x, texel.y)) * 0.0625;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(0.0, texel.y)) * 0.125;
+                    sum += texture2D(sTexture, vTextureCoord + vec2(texel.x, texel.y)) * 0.0625;
+                    color = sum;
+                } else {
+                    color = texture2D(sTexture, vTextureCoord);
+                }
 
                 if (uCircleMask > 0.5) {
                     vec2 centered = (gl_FragCoord.xy / uViewportSize) - vec2(0.5);

@@ -3,6 +3,7 @@ package io.github.webarmour.videomessagerecorder.camera
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraAccessException
@@ -16,9 +17,12 @@ import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.DynamicRangeProfiles
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
+import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
+import android.os.Process
 import android.util.Log
 import android.util.Range
 import android.util.Size
@@ -67,14 +71,11 @@ internal class CameraRecorderController(
         val renderer: CameraGlRenderer,
         val inputSurface: Surface,
     ) {
+        var prewarmReader: ImageReader? = null
+        val prewarmReaderFrames = AtomicLong(0L)
         val cameraZoomRange = profile.characteristics.zoomRatioRangeCompat()
-        // Zoom the shared preview/encoder texture without reconfiguring the camera stream.
-        // A front camera with a zoom-out lens keeps Camera2 zoom to preserve its full range.
-        val zoomInRenderer =
-            (profile.role == CameraRole.FRONT && cameraZoomRange.lower >= 1f) ||
-                (profile.role == CameraRole.REAR_WIDE &&
-                    profile.characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
-                        ?.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA) == true)
+        // Front camera uses GL shader digital zoom; Rear camera uses Camera2 hardware sensor zoom (CONTROL_ZOOM_RATIO / SCALER_CROP_REGION).
+        val zoomInRenderer = profile.role == CameraRole.FRONT
         val concurrentZoomRange = Range(
             1f,
             minOf(
@@ -110,7 +111,7 @@ internal class CameraRecorderController(
         var stable3AFrames = 0
         var warmed = false
 
-        // When the inactive concurrent camera is kept at 30 fps but recording is 60 fps,
+        // When the inactive concurrent camera is kept at 15 fps but recording is 60 fps,
         // switching first promotes this camera to the recording rate. The old renderer stays
         // attached until the promoted request is actually observed in CaptureResult, which hides
         // vendor sensor/ISP mode-switch latency from preview and MediaCodec.
@@ -118,10 +119,16 @@ internal class CameraRecorderController(
         var switchPromotionStableFrames = 0
         var switchPromotionFpsReadyNs = 0L
         var switchPromotionAeWaitMs = 0L
+        var switchGlInputBaseline = -1L
+        var switchGlRequestSequence = 0L
     }
 
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val prewarmDrainThread = HandlerThread(
+        "CameraPrewarmDrain", Process.THREAD_PRIORITY_DEFAULT,
+    ).apply { start() }
+    private val prewarmDrainHandler = Handler(prewarmDrainThread.looper)
     private val cameraManager = appContext.getSystemService(CameraManager::class.java)
 
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -167,9 +174,11 @@ internal class CameraRecorderController(
     private var closeWaitScheduled = false
     private var closeWaitGeneration = 0L
     @Volatile private var activeRole = CameraRole.FRONT
+    @Volatile private var diagnosticsMode: DiagnosticsMode = DiagnosticsMode.Disabled
     private var pendingActivationRole: CameraRole? = null
     @Volatile private var concurrentCameraPrewarm = false
     private var concurrentVideoRecordUseCase = true
+    private var concurrentReaderPrewarm = false
     private var concurrentPrewarmFps = CONCURRENT_PREWARM_MAX_FPS
     private var concurrentHighFpsRejected = false
     @Volatile private var cameraRecoveryPending = false
@@ -206,6 +215,12 @@ internal class CameraRecorderController(
     private var recordingBaseName: String? = null
     private var activeRecordingConfig: RecordingConfig? = null
     private var lastMetricsUiUpdateNs = 0L
+
+    fun restoreLastCamera(role: CameraRole) {
+        if (!cameraSystemPrepared && !lifecycleActive) {
+            activeRole = role
+        }
+    }
 
     fun setPermissionGranted(granted: Boolean) {
         permissionGranted = granted
@@ -304,9 +319,9 @@ internal class CameraRecorderController(
                     return@execute
                 }
 
-                // A camera's previous pinch zoom must not become its next starting zoom.
-                // Reset the outgoing request before showing the already warm target.
+                // Blur the active renderer's last frame into the preview surface during switch.
                 activePipeline()?.let { outgoing ->
+                    outgoing.renderer.setBlurPreview(true)
                     outgoing.zoomRatio = 1f
                     if (outgoing.zoomInRenderer) outgoing.renderer.setDigitalZoomRatio(1f)
                     if (concurrentCameraPrewarm && outgoing.session != null &&
@@ -335,17 +350,29 @@ internal class CameraRecorderController(
                     target.switchPromotionStableFrames = 0
                     target.switchPromotionFpsReadyNs = 0L
                     target.switchPromotionAeWaitMs = 0L
+                    target.switchGlInputBaseline = -1L
+                    target.switchGlRequestSequence = 0L
                     if (needsHighFpsPromotion) {
                         // The inactive camera is prewarmed below the requested recording rate.
                         // Do not expose that rate promotion
                         // transition to preview/encoder: keep rendering the old camera until Capture2
                         // confirms that the target has reached the requested cadence.
                         target.switchPromotionStartedNs = System.nanoTime()
+                    }
+                    if (needsHighFpsPromotion || concurrentReaderPrewarm) {
+                        // In reader prewarm mode redirect the target to GL while the outgoing
+                        // camera still feeds encoder and preview. Handoff follows its first frame.
+                        if (concurrentReaderPrewarm) {
+                            target.switchGlInputBaseline = target.renderer.performanceStats().inputFrames
+                        }
                         submitRepeatingRequest(
                             pipeline = target,
                             resetWarmup = false,
                             publishUiStatus = false,
                         )
+                        if (concurrentReaderPrewarm) {
+                            target.switchGlRequestSequence = target.zoomSubmittedSequence
+                        }
                     }
                     // The target may still be emitting frames from its previous zoom.
                     // Activate only after Camera2 reports a frame captured at 1x.
@@ -451,8 +478,14 @@ internal class CameraRecorderController(
             }
         }
 
+        val prewarmModeChanged =
+            normalized.enableConcurrentPrewarm != config.enableConcurrentPrewarm ||
+                    normalized.concurrentPrewarmFps != config.concurrentPrewarmFps
+
         val sourcePipelineChanged =
-            normalized.quality != config.quality || normalized.frameRate != config.frameRate
+            normalized.quality != config.quality ||
+                    normalized.frameRate != config.frameRate ||
+                    prewarmModeChanged
 
         val exposurePipelineChanged =
             normalized.holdFpsInLowLight != config.holdFpsInLowLight ||
@@ -558,13 +591,7 @@ internal class CameraRecorderController(
                 zoomUpdateScheduled.set(false)
                 return
             }
-            // Hardware zoom remains available on cameras that need their optical zoom-out range.
-            // Keep the slower request cadence for the logical rear camera.
-            val maxRequestRate = if (pipeline.profile.role == CameraRole.FRONT) {
-                config.frameRate
-            } else {
-                minOf(config.frameRate, MAX_REAR_ZOOM_REQUESTS_PER_SECOND)
-            }
+            val maxRequestRate = config.frameRate
             val frameIntervalNs = 1_000_000_000L /
                 maxRequestRate.coerceAtLeast(1)
             val lastRequestNs = pipeline.lastZoomRequestNs
@@ -717,7 +744,27 @@ internal class CameraRecorderController(
 
         val front = pipelines[CameraRole.FRONT]
         val rear = pipelines[CameraRole.REAR_WIDE]
+        if (config.enableConcurrentPrewarm && front != null && rear != null) {
+            listOf(front, rear).forEach { pipeline ->
+                pipeline.prewarmReader = runCatching {
+                    ImageReader.newInstance(
+                        pipeline.profile.sourceSize.width,
+                        pipeline.profile.sourceSize.height,
+                        ImageFormat.PRIVATE,
+                        3,
+                    ).also { reader ->
+                        reader.setOnImageAvailableListener({ available ->
+                            runCatching { available.acquireLatestImage()?.close() }
+                                .onSuccess { pipeline.prewarmReaderFrames.incrementAndGet() }
+                        }, prewarmDrainHandler)
+                    }
+                }.onFailure { error ->
+                    Log.w(TAG, "Unable to prepare low-overhead camera prewarm", error)
+                }.getOrNull()
+            }
+        }
         concurrentCameraPrewarm = if (
+            config.enableConcurrentPrewarm &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
             front != null &&
             rear != null
@@ -727,10 +774,19 @@ internal class CameraRecorderController(
                         combination.contains(rear.profile.cameraId)
             }
             if (pairAdvertised) {
-                concurrentVideoRecordUseCase = supportsConcurrentSessions(
+                concurrentReaderPrewarm = front.prewarmReader != null && rear.prewarmReader != null &&
+                    supportsConcurrentSessions(front, rear, allowVideoRecordUseCase = true,
+                        useReaderPrewarm = true)
+                concurrentVideoRecordUseCase = concurrentReaderPrewarm || supportsConcurrentSessions(
                     front, rear, allowVideoRecordUseCase = true,
                 )
-                concurrentVideoRecordUseCase || supportsConcurrentSessions(
+                if (!concurrentReaderPrewarm && front.prewarmReader != null && rear.prewarmReader != null &&
+                    supportsConcurrentSessions(front, rear, allowVideoRecordUseCase = false,
+                        useReaderPrewarm = true)) {
+                    concurrentReaderPrewarm = true
+                    concurrentVideoRecordUseCase = false
+                }
+                concurrentVideoRecordUseCase || concurrentReaderPrewarm || supportsConcurrentSessions(
                     front, rear, allowVideoRecordUseCase = false,
                 )
             } else {
@@ -739,19 +795,12 @@ internal class CameraRecorderController(
         } else {
             false
         }
-
-        activePipeline()?.let { pipeline ->
-            val range = availableZoomRange(pipeline)
-            val zoom = pipeline.zoomRatio.coerceIn(range.lower, range.upper)
-            pipeline.zoomRatio = zoom
-            if (pipeline.zoomInRenderer) pipeline.renderer.setDigitalZoomRatio(zoom)
-            config = config.copy(zoomRatio = zoom)
+        if (!concurrentReaderPrewarm) {
+            pipelines.values.forEach(::closePrewarmReader)
         }
 
-        // Keep both sessions open, but let only the camera feeding preview/encoder run at the
-        // recording cadence. This isolates the cost of consuming the inactive 60 fps stream.
-        concurrentPrewarmFps = minOf(config.frameRate, CONCURRENT_PREWARM_MAX_FPS)
-        Log.i(TAG, "Concurrent prewarm=$concurrentCameraPrewarm, fps=$concurrentPrewarmFps")
+        concurrentPrewarmFps = minOf(config.frameRate, config.concurrentPrewarmFps.coerceAtLeast(1))
+        Log.i(TAG, "Concurrent prewarm=$concurrentCameraPrewarm, fps=$concurrentPrewarmFps, reader=$concurrentReaderPrewarm")
 
         cameraSystemPrepared = true
         attachPreviewToActiveRenderer()
@@ -778,12 +827,14 @@ internal class CameraRecorderController(
         switchRequestPending.set(false)
         pipelines.values.forEach { pipeline ->
             closePipelineCamera(pipeline)
+            closePrewarmReader(pipeline)
             runCatching { pipeline.renderer.close() }
         }
         pipelines.clear()
         pendingActivationRole = null
         concurrentCameraPrewarm = false
         concurrentVideoRecordUseCase = true
+        concurrentReaderPrewarm = false
         cameraSystemPrepared = false
         timestampGate.reset()
 
@@ -795,7 +846,10 @@ internal class CameraRecorderController(
         front: CameraPipeline,
         rear: CameraPipeline,
         allowVideoRecordUseCase: Boolean,
+        useReaderPrewarm: Boolean = false,
     ): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        if (appContext.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return false
         val callback = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(session: CameraCaptureSession) = Unit
             override fun onConfigureFailed(session: CameraCaptureSession) = Unit
@@ -803,7 +857,12 @@ internal class CameraRecorderController(
         val configurations = listOf(front, rear).associate { pipeline ->
             pipeline.profile.cameraId to SessionConfiguration(
                 SessionConfiguration.SESSION_REGULAR,
-                listOf(createOutputConfiguration(pipeline, allowVideoRecordUseCase)),
+                buildList {
+                    add(createOutputConfiguration(pipeline, allowVideoRecordUseCase))
+                    if (useReaderPrewarm) {
+                        pipeline.prewarmReader?.surface?.let { add(OutputConfiguration(it)) }
+                    }
+                },
                 cameraCallbackExecutor,
                 callback,
             )
@@ -1156,10 +1215,16 @@ internal class CameraRecorderController(
         val camera = pipeline.device ?: return
         val characteristics = pipeline.profile.characteristics
         val output = createOutputConfiguration(pipeline, allowVideoRecordUseCase)
+        val outputs = buildList {
+            add(output)
+            if (concurrentReaderPrewarm) {
+                pipeline.prewarmReader?.surface?.let { add(OutputConfiguration(it)) }
+            }
+        }
 
         val sessionConfig = SessionConfiguration(
             SessionConfiguration.SESSION_REGULAR,
-            listOf(output),
+            outputs,
             cameraCallbackExecutor,
             object : CameraCaptureSession.StateCallback() {
 
@@ -1242,10 +1307,7 @@ internal class CameraRecorderController(
             val ranges = characteristics.get(
                 CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES
             )
-            val isInactiveConcurrentPrewarm = concurrentCameraPrewarm &&
-                pipeline.profile.role != activeRole &&
-                pipeline.profile.role != pendingActivationRole
-            val fpsSelection = selectPipelineFpsRange(ranges, isInactiveConcurrentPrewarm)
+            val fpsSelection = chooseVideoFpsRange(ranges, config.frameRate, config.holdFpsInLowLight)
             val sessionRequest = camera
                 .createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
                 .apply {
@@ -1642,7 +1704,12 @@ internal class CameraRecorderController(
 
             val requestZoomRatio = if (pipeline.zoomInRenderer) 1f else pipeline.zoomRatio
             val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                addTarget(pipeline.inputSurface)
+                val prewarmSurface = if (isInactiveConcurrentPrewarm && concurrentReaderPrewarm) {
+                    pipeline.prewarmReader?.surface
+                } else {
+                    null
+                }
+                addTarget(prewarmSurface ?: pipeline.inputSurface)
                 set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
                 set(
                     CaptureRequest.CONTROL_CAPTURE_INTENT,
@@ -2006,10 +2073,18 @@ internal class CameraRecorderController(
         result: TotalCaptureResult,
     ) {
         updateWarmup(pipeline, result)
+        if (pendingActivationRole == pipeline.profile.role && pipeline.warmed &&
+            concurrentReaderPrewarm && pipeline.switchGlInputBaseline < 0L &&
+            pipeline.session != null
+        ) {
+            pipeline.switchGlInputBaseline = pipeline.renderer.performanceStats().inputFrames
+            submitRepeatingRequest(pipeline, resetWarmup = false, publishUiStatus = false)
+            pipeline.switchGlRequestSequence = pipeline.zoomSubmittedSequence
+        }
 
         if (pendingActivationRole == pipeline.profile.role && pipeline.warmed &&
             pipeline.switchPromotionStartedNs == 0L && isOneXCapture(pipeline, result) &&
-            isPrewarmedSwitchAeReady(pipeline, result)
+            isPrewarmedSwitchAeReady(pipeline, result) && hasSwitchGlFrame(pipeline, result)
         ) {
             activatePipeline(pipeline)
         }
@@ -2020,7 +2095,7 @@ internal class CameraRecorderController(
             pipeline.warmed &&
             pipeline.switchPromotionStartedNs != 0L &&
             isConcurrentSwitchTargetReady(pipeline, result) &&
-            isOneXCapture(pipeline, result)
+            isOneXCapture(pipeline, result) && hasSwitchGlFrame(pipeline, result)
         ) {
             activatePipeline(pipeline)
         }
@@ -2037,6 +2112,16 @@ internal class CameraRecorderController(
         }
         publishLiveMetrics(result)
     }
+
+    private fun hasSwitchGlFrame(
+        pipeline: CameraPipeline,
+        result: TotalCaptureResult,
+    ): Boolean =
+        !concurrentReaderPrewarm ||
+            (pipeline.switchGlInputBaseline >= 0L &&
+                pipeline.switchGlRequestSequence > 0L &&
+                (result.request.tag as? Long ?: 0L) >= pipeline.switchGlRequestSequence &&
+                pipeline.renderer.performanceStats().inputFrames > pipeline.switchGlInputBaseline)
 
     private fun isOneXCapture(pipeline: CameraPipeline, result: TotalCaptureResult): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -2064,6 +2149,8 @@ internal class CameraRecorderController(
                         target.switchPromotionStartedNs = 0L
                         target.switchPromotionFpsReadyNs = 0L
                         target.switchPromotionAeWaitMs = 0L
+                        target.switchGlInputBaseline = -1L
+                        target.switchGlRequestSequence = 0L
                         if (concurrentCameraPrewarm) {
                             activePipeline()?.takeIf { it.session != null }?.let {
                                 submitRepeatingRequest(it, resetWarmup = false, publishUiStatus = false)
@@ -2265,6 +2352,8 @@ internal class CameraRecorderController(
                 )
             }
 
+            old?.renderer?.setBlurPreview(false)
+            target.renderer.setBlurPreview(false)
             // Reconnect the encoder before the preview: a slow TextureView/EGL attach must
             // not prolong the gap in the recorded video during a warm camera switch.
             attachPreviewToActiveRenderer()
@@ -2274,7 +2363,8 @@ internal class CameraRecorderController(
             // visible. Changing its FPS while it is still the active preview can cause
             // a transient exposure/color shift in the last frame shown during switching.
             if (concurrentCameraPrewarm && old?.session != null &&
-                (old.selectedFpsRange?.upper ?: Int.MAX_VALUE) > concurrentPrewarmFps
+                (concurrentReaderPrewarm ||
+                    (old.selectedFpsRange?.upper ?: Int.MAX_VALUE) > concurrentPrewarmFps)
             ) {
                 submitRepeatingRequest(old, resetWarmup = false, publishUiStatus = false)
             }
@@ -2289,6 +2379,8 @@ internal class CameraRecorderController(
             target.switchPromotionStableFrames = 0
             target.switchPromotionFpsReadyNs = 0L
             target.switchPromotionAeWaitMs = 0L
+            target.switchGlInputBaseline = -1L
+            target.switchGlRequestSequence = 0L
             pendingActivationRole = null
             switchRequestPending.set(false)
             cameraSwitchCount += 1
@@ -2325,6 +2417,7 @@ internal class CameraRecorderController(
     }
 
     private fun publishLiveMetrics(result: TotalCaptureResult) {
+        if (diagnosticsMode == DiagnosticsMode.Disabled) return
         val nowNs = System.nanoTime()
         if (nowNs - lastMetricsUiUpdateNs < METRICS_UI_INTERVAL_NS) return
         lastMetricsUiUpdateNs = nowNs
@@ -2703,6 +2796,7 @@ internal class CameraRecorderController(
     fun setDiagnosticsMode(
         mode: DiagnosticsMode,
     ) {
+        this.diagnosticsMode = mode
         telemetry.setMode(
             mode
         )
@@ -2876,6 +2970,7 @@ internal class CameraRecorderController(
                             add(
                                 "concurrentCameraPrewarm=$concurrentCameraPrewarm"
                             )
+                            add("concurrentReaderPrewarm=$concurrentReaderPrewarm")
 
 
                             add(
@@ -2889,6 +2984,12 @@ internal class CameraRecorderController(
                             pipelines.values.forEach { pipeline ->
                                 add(
                                     "cameraFpsRange.${pipeline.profile.role.name}=${pipeline.selectedFpsRange}"
+                                )
+                                add(
+                                    "cameraSourceSize.${pipeline.profile.role.name}=${pipeline.profile.sourceSize}"
+                                )
+                                add(
+                                    "prewarmReaderFrames.${pipeline.profile.role.name}=${pipeline.prewarmReaderFrames.get()}"
                                 )
                             }
 
@@ -2979,6 +3080,8 @@ internal class CameraRecorderController(
                             add("rendererMaxPreviewSwapMs=${renderPerformance.maxOfOrNull { it.maxPreviewSwapNs }?.div(1_000_000.0) ?: 0.0}")
                             add("rendererMaxSourceAcquireMs=${renderPerformance.maxOfOrNull { it.maxSourceAcquireNs }?.div(1_000_000.0) ?: 0.0}")
                             add("rendererMaxEncoderDrawMs=${renderPerformance.maxOfOrNull { it.maxEncoderDrawNs }?.div(1_000_000.0) ?: 0.0}")
+                            add("rendererMaxEncoderGlSetupMs=${renderPerformance.maxOfOrNull { it.maxEncoderGlSetupNs }?.div(1_000_000.0) ?: 0.0}")
+                            add("rendererMaxEncoderGlDrawCallMs=${renderPerformance.maxOfOrNull { it.maxEncoderGlDrawCallNs }?.div(1_000_000.0) ?: 0.0}")
                             add("rendererMaxPreviewDrawMs=${renderPerformance.maxOfOrNull { it.maxPreviewDrawNs }?.div(1_000_000.0) ?: 0.0}")
                             renderPerformanceByRole.forEach { (role, stats) ->
                                 add("renderer.${role.name}.threadPriority=${stats.threadPriority}")
@@ -2991,6 +3094,8 @@ internal class CameraRecorderController(
                                 add("renderer.${role.name}.previewDrawOverBudgetEvents=${stats.previewDrawOverBudgetEvents}")
                                 add("renderer.${role.name}.maxSourceAcquireMs=${stats.maxSourceAcquireNs / 1_000_000.0}")
                                 add("renderer.${role.name}.maxEncoderDrawMs=${stats.maxEncoderDrawNs / 1_000_000.0}")
+                                add("renderer.${role.name}.maxEncoderGlSetupMs=${stats.maxEncoderGlSetupNs / 1_000_000.0}")
+                                add("renderer.${role.name}.maxEncoderGlDrawCallMs=${stats.maxEncoderGlDrawCallNs / 1_000_000.0}")
                                 add("renderer.${role.name}.maxEglMakeCurrentMs=${stats.maxEglMakeCurrentNs / 1_000_000.0}")
                             }
                             add("maxPendingZoomRequests=${pipelines.values.maxOfOrNull { it.maxPendingZoomRequests } ?: 0L}")
@@ -3074,6 +3179,7 @@ internal class CameraRecorderController(
                     pipelines.values.forEach(
                         ::closePipelineCamera
                     )
+                    pipelines.values.forEach(::closePrewarmReader)
 
                     /*
                      * Take a snapshot before clearing controller state.
@@ -3092,6 +3198,7 @@ internal class CameraRecorderController(
 
                     pendingActivationRole = null
                     concurrentCameraPrewarm = false
+                    concurrentReaderPrewarm = false
                     cameraSystemPrepared = false
 
                     renderers.forEach { renderer ->
@@ -3114,6 +3221,7 @@ internal class CameraRecorderController(
                      * accepted afterwards.
                      */
                     cameraExecutor.shutdown()
+                    prewarmDrainThread.quitSafely()
                 }
             }
         } catch (error: RejectedExecutionException) {
@@ -3225,6 +3333,14 @@ internal class CameraRecorderController(
         }
     }
 
+    private fun closePrewarmReader(pipeline: CameraPipeline) {
+        pipeline.prewarmReader?.let { reader ->
+            runCatching { reader.setOnImageAvailableListener(null, null) }
+            runCatching { reader.close() }
+        }
+        pipeline.prewarmReader = null
+    }
+
     private fun closePipelineCamera(pipeline: CameraPipeline) {
         pipeline.openGeneration += 1L
         runCatching { pipeline.session?.stopRepeating() }
@@ -3245,6 +3361,8 @@ internal class CameraRecorderController(
         pipeline.switchPromotionStableFrames = 0
         pipeline.switchPromotionFpsReadyNs = 0L
         pipeline.switchPromotionAeWaitMs = 0L
+        pipeline.switchGlInputBaseline = -1L
+        pipeline.switchGlRequestSequence = 0L
     }
 
     private fun closeCameraDevice(camera: CameraDevice) {
@@ -3366,7 +3484,7 @@ internal class CameraRecorderController(
 
         if (concurrentCameraPrewarm && concurrentPrewarmFps > CONCURRENT_PREWARM_MAX_FPS) {
             // Advertised stream configurations do not guarantee that the vendor ISP can
-            // sustain them simultaneously. Keep both cameras warm at 30 fps after a failure.
+            // sustain them simultaneously. Retry with the inactive camera capped at 15 fps.
             concurrentHighFpsRejected = true
             concurrentPrewarmFps = minOf(config.frameRate, CONCURRENT_PREWARM_MAX_FPS)
             Log.w(TAG, "Concurrent high-FPS prewarm failed; retrying with $concurrentPrewarmFps fps")
@@ -3977,15 +4095,17 @@ internal class CameraRecorderController(
         const val CAMERA_RECOVERY_TIMEOUT_MS = 2_500L
         const val CAMERA_CLOSE_TIMEOUT_MS = 2_000L
         const val MAX_CAMERA_RECOVERY_ATTEMPTS = 5
-        const val CONCURRENT_PREWARM_MAX_FPS = 30
+        // Both camera streams stay active during recording. Keep the inactive stream just fast
+        // enough for a warm switch while reserving ISP/GPU bandwidth for the 60 fps output.
+        const val CONCURRENT_PREWARM_MAX_FPS = 60
         const val SWITCH_FPS_TOLERANCE_DIVISOR = 5
         const val MAX_SWITCH_PROMOTION_WAIT_NS = 300_000_000L
         const val MAX_SWITCH_AE_WAIT_NS = 150_000_000L
         const val SWITCH_ZOOM_FRAME_TIMEOUT_MS = 500L
         const val SWITCH_FPS_PROMOTION_FRAME_TIMEOUT_MS = 1_000L
-        const val MAX_REAR_ZOOM_REQUESTS_PER_SECOND = 30
+        const val MAX_REAR_ZOOM_REQUESTS_PER_SECOND = 60
         const val MAX_PENDING_FRONT_ZOOM_REQUESTS = 6L
-        const val MAX_PENDING_REAR_ZOOM_REQUESTS = 2L
+        const val MAX_PENDING_REAR_ZOOM_REQUESTS = 6L
         const val MIN_WARMUP_NS = 300_000_000L
         const val MAX_WARMUP_NS = 1_500_000_000L
         const val STABLE_3A_FRAMES = 4
