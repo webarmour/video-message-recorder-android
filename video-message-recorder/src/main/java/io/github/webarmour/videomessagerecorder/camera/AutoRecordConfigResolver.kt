@@ -8,6 +8,7 @@ import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.os.Build
 import android.util.Log
+import io.github.webarmour.videomessagerecorder.RecordingMode
 
 internal class AutoRecordingConfigResolver(
     context: Context,
@@ -64,56 +65,25 @@ internal class AutoRecordingConfigResolver(
         val codecInfos = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
         val encoderSupportCache = HashMap<Pair<VideoQuality, Int>, Boolean>()
 
+        // Prefer 640/60, then lower the FPS before reducing resolution. Include HAL
+        // endpoints so devices limited to e.g. 25 or 15 FPS still get a supported pair.
+        val frameRates = (listOf(60, 30) + cameras.flatMap { characteristics ->
+            characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                .orEmpty().flatMap { listOf(it.lower, it.upper) }
+        }).filter { it in 1..60 }.distinct().sortedDescending()
+
         AUTO_QUALITY_ORDER.forEach { quality ->
-
-            /*
-             * Best case:
-             * both front and rear can really hold 60 FPS.
-             */
-            createCandidate(
-                cameras = cameras,
-                quality = quality,
-                frameRate = 60,
-                holdFps = true,
-                codecInfos = codecInfos,
-                encoderSupportCache = encoderSupportCache,
-            )?.let {
-                return it
-            }
-
-            /*
-             * Main fallback:
-             * stable fixed 30 FPS.
-             *
-             * This is exactly what Pixel emulator from your log supports:
-             * FPS=[30, 30]
-             */
-            createCandidate(
-                cameras = cameras,
-                quality = quality,
-                frameRate = 30,
-                holdFps = true,
-                codecInfos = codecInfos,
-                encoderSupportCache = encoderSupportCache,
-            )?.let {
-                return it
-            }
-
-            /*
-             * Last fallback for this resolution:
-             * allow HAL to vary FPS around 30.
-             *
-             * Recording must not fail just because fixed FPS is unavailable.
-             */
-            createCandidate(
-                cameras = cameras,
-                quality = quality,
-                frameRate = 30,
-                holdFps = false,
-                codecInfos = codecInfos,
-                encoderSupportCache = encoderSupportCache,
-            )?.let {
-                return it
+            frameRates.forEach { frameRate ->
+                listOf(true, false).forEach { holdFps ->
+                    createCandidate(
+                        cameras = cameras,
+                        quality = quality,
+                        frameRate = frameRate,
+                        holdFps = holdFps,
+                        codecInfos = codecInfos,
+                        encoderSupportCache = encoderSupportCache,
+                    )?.let { return it }
+                }
             }
         }
 
@@ -185,7 +155,7 @@ internal class AutoRecordingConfigResolver(
              *
              * Adaptive 30 is still allowed.
              */
-            return !holdFps
+            return !holdFps && frameRate == 30
         }
 
         return if (holdFps) {
@@ -290,98 +260,11 @@ internal class AutoRecordingConfigResolver(
         frameRate: Int,
         holdFps: Boolean,
     ): RecordingConfig {
-        return RecordingConfig(
+        return RecordingMode.Auto.preferredConfig.copy(
             quality = quality,
-
-            videoBitrate = bitrateFor(
-                quality = quality,
-                frameRate = frameRate,
-            ),
-
             frameRate = frameRate,
-
-            iFrameIntervalSeconds = 1,
-
-            maxBFrames =
-                if (
-                    Build.VERSION.SDK_INT >=
-                    Build.VERSION_CODES.Q
-                ) {
-                    2
-                } else {
-                    0
-                },
-
             holdFpsInLowLight = holdFps,
-
-            lowLightBoost = false,
-
-            aePriority =
-                AePrioritySetting.OFF,
-
-            antibanding =
-                AntibandingSetting.AUTO,
-
-            /*
-             * AUTO should avoid forcing OEM ISP modes unless necessary.
-             *
-             * This gives old Realme/Samsung/etc. HALs maximum freedom.
-             */
-            noiseReduction =
-                NoiseReductionSetting.OEM_DEFAULT,
-
-            hotPixelCorrection =
-                HotPixelSetting.OEM_DEFAULT,
-
-            lensShading =
-                ShadingSetting.OEM_DEFAULT,
-
-            colorCorrection =
-                ColorCorrectionSetting.OEM_DEFAULT,
-
-            stabilization =
-                StabilizationSetting.OEM_DEFAULT,
-
-            opticalStabilization =
-                OpticalStabilizationSetting.OEM_DEFAULT,
-
-            edgeEnhancement =
-                EdgeSetting.OEM_DEFAULT,
-
-            distortionCorrection =
-                DistortionCorrectionSetting.OEM_DEFAULT,
-
-            aberrationCorrection =
-                AberrationCorrectionSetting.OEM_DEFAULT,
-
-            tonemap =
-                TonemapSetting.OEM_DEFAULT,
-
-            awb =
-                AwbSetting.AUTO,
-
-            aeLock = false,
-            awbLock = false,
-
-            exposureCompensationSteps = 0,
-
-            exposureMode =
-                ExposureMode.AUTO,
-
-            focus =
-                FocusSetting.CONTINUOUS_VIDEO,
-
-            zoomRatio = 1f,
-
-            aperture = null,
-
-            circleMaskInSavedVideo = false,
-
-            hidePreviewUntilRecording = false,
-
-            audioSampleRate = 48_000,
-
-            audioBitrate = 64_000,
+            maxBFrames = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) 2 else 0,
         )
     }
 
@@ -397,65 +280,6 @@ internal class AutoRecordingConfigResolver(
             frameRate = 30,
             holdFps = false,
         )
-    }
-
-    private fun bitrateFor(
-        quality: VideoQuality,
-        frameRate: Int,
-    ): Int {
-        return when (quality) {
-
-            VideoQuality.TELEGRAM_NOTE_MAX -> {
-                if (frameRate >= 60) {
-                    2_200_000
-                } else {
-                    1_500_000
-                }
-            }
-
-            VideoQuality.HIGH -> {
-                if (frameRate >= 60) {
-                    1_600_000
-                } else {
-                    1_100_000
-                }
-            }
-
-            VideoQuality.IPHONE_LIKE -> {
-                if (frameRate >= 60) {
-                    1_300_000
-                } else {
-                    900_000
-                }
-            }
-
-            VideoQuality.TELEGRAM -> {
-                if (frameRate >= 60) {
-                    1_200_000
-                } else {
-                    850_000
-                }
-            }
-
-            VideoQuality.COMPACT -> {
-                if (frameRate >= 60) {
-                    1_000_000
-                } else {
-                    700_000
-                }
-            }
-
-            VideoQuality.HD,
-            VideoQuality.FULL_HD,
-            VideoQuality.QHD,
-                -> {
-                if (frameRate >= 60) {
-                    2_500_000
-                } else {
-                    1_800_000
-                }
-            }
-        }
     }
 
     private companion object {

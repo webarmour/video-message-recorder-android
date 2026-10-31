@@ -216,6 +216,12 @@ internal class CameraRecorderController(
     private var activeRecordingConfig: RecordingConfig? = null
     private var lastMetricsUiUpdateNs = 0L
 
+    fun restoreLastCamera(role: CameraRole) {
+        if (!cameraSystemPrepared && !lifecycleActive) {
+            activeRole = role
+        }
+    }
+
     fun setPermissionGranted(granted: Boolean) {
         permissionGranted = granted
         maybePrepareAndOpenCameras()
